@@ -82,7 +82,8 @@ def test_first_sync_stores_snapshot_and_second_sync_without_change_does_nothing(
     out = t.sync(rid)
     assert out["changed"] is False and out["actions"] == []
     assert len(writes(h, rid)) == n_writes
-    assert [a["step"] for a in h.store.list_audit(rid)[n_audit:]] == ["tool:rocketlane_list_tasks"]
+    # Routine read-only sync: recorded in tool_calls, no audit row (the 60 s sync flooded the activity feed live).
+    assert [a["step"] for a in h.store.list_audit(rid)[n_audit:]] == []
 
 
 def test_tracking_agent_allowlist_is_minimal_and_other_agents_cannot_reopen_tasks(ent):
