@@ -44,7 +44,7 @@ def build_graph(d: Deps, checkpointer):
     def after_intake(s: OnboardingState) -> str:
         if s.get("escalation_reason"):
             return "escalate"
-        if s.get("status") == "AWAITING_CLARIFICATION":
+        if s.get("status") in ("AWAITING_CLARIFICATION", "NOT_A_DEAL"):
             return END
         return "comms"
 

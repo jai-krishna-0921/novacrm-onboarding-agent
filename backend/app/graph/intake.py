@@ -63,6 +63,11 @@ def build_intake(d: Deps):
     def validate(s: OnboardingState) -> dict:
         fields = ExtractedDeal(**s["extracted"])
         issues = validate_deal(fields)
+        if fields.deal_count == 0:
+            # Everyday AE mail (meeting requests, lost or slipped deals) reaches extraction because any mail from
+            # a known AE is read. Nothing to onboard: record it and stop, no reply and no escalation.
+            d.audit(s, AGENT, "not_a_deal", "email from the AE announces no closed-won deal; no action taken")
+            return {"issues": [], "not_a_deal": True, **d.set_status(s, "NOT_A_DEAL")}
         if fields.deal_count != 1:
             d.audit(s, AGENT, "validate", f"email announces {fields.deal_count} deals; one deal per email",
                     status="escalated")
@@ -231,7 +236,7 @@ def build_intake(d: Deps):
     g.add_conditional_edges("check_sender", lambda s: escalated(s) or "extract_fields", [END, "extract_fields"])
     g.add_conditional_edges("extract_fields", lambda s: escalated(s) or "validate", [END, "validate"])
     g.add_conditional_edges("validate", lambda s: escalated(s) or (
-        "request_clarification" if s["issues"] else "lookup_ae"),
+        END if s.get("not_a_deal") else "request_clarification" if s["issues"] else "lookup_ae"),
         [END, "request_clarification", "lookup_ae"])
     g.add_edge("request_clarification", END)
     g.add_conditional_edges("lookup_ae", lambda s: escalated(s) or "precheck_duplicate", [END, "precheck_duplicate"])

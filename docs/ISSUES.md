@@ -66,6 +66,8 @@ AUDIT = idempotency/concurrency audit, API = check against the live Rocketlane/R
 | 38 | Welcome didn't name the plan | Low | EVAL | Fixed: `welcome_v2`. |
 | 39 | Handoff check flagged dates that were in the data | Medium | EVAL | Fixed: any date in the input may be cited. |
 | 40 | Handoff check flagged "no failed checks" as a contradiction | Low | EVAL | Fixed: negations allowed (test). |
+| 61 | Everyday AE mail (meeting requests, lost or slipped deals) reached extraction and was escalated as "0 deals; needs a human to split" | Medium | Review (user question) | Fixed: `deal_count == 0` closes the run as `NOT_A_DEAL` (no reply, no escalation); `extract_v3` counts only signed deals; 8 new eval cases. 34/34. |
+| 62 | Eval dataset had a 16-character Salesforce ID (invalid) | Low | EVAL | Fixed: test data. |
 | 41 | Handoff person-name check is heuristic (single first names not caught); 2 known false positives | Low | TR (tracking) | Open: costs one redraft, then the static template. |
 
 ## Tracking (Agent 3)

@@ -45,6 +45,7 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 | Sender must be an **active AE in the Postgres AE directory**, checked before any LLM call or reply. | Strangers never trigger calls or replies. |
 | Sender must be **authenticated by Gmail**: `Authentication-Results` from `mx.google.com` only (top-most), `dmarc=pass` or aligned `dkim=pass`; SPF alone never counts. | A forged `From:` would otherwise make the system phone the AE and create real projects. Verified on real inbox mail. |
 | Required fields: customer name, contact email, AE, **Salesforce opportunity link** (`*.salesforce.com` / `*.force.com`, id `006…`). Missing / invalid / conflicting → threaded reply to the AE, nothing created. | The assignment asks for clarification instead of assumptions. |
+| Any mail from a known AE is read (AEs don't always write "Closed Won"); if it announces no signed deal (meeting request, lost or slipped deal) the run closes as `NOT_A_DEAL` with no reply or escalation. | AE mail shouldn't create noise in the human queue. |
 | One deal per email; auto-replies ignored; duplicates detected by normalised customer name + 15-char opportunity id, locally and in Rocketlane. | Edge cases from the assignment. |
 | Tier confirmed only if Retell's post-call analysis says enterprise/growth **and** the AE explicitly confirmed the read-back **and** an independent LLM transcript reading agrees. | A wrongly confirmed tier creates the wrong project; the transcript eval gate is 24/24 with 0 false confirmations. |
 

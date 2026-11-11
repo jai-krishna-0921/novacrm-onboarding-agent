@@ -351,3 +351,19 @@ def test_missing_pm_email_is_flagged_in_audit(settings):
     row = next(r for r in h.store.audit_rows if r["run_id"] == rid and r["step"] == "create_project")
     assert "Project Manager" in str(row)
     assert "Project Manager" not in {p["placeholderName"] for p in h.world.rocketlane.projects[0]["placeholders"]}
+
+
+# ---------------- AE emails that aren't deal announcements ----------------
+
+@pytest.mark.parametrize("fields", [
+    {**GOOD, "deal_count": 0},                                       # "can we sync tomorrow?"
+    {**GOOD, "deal_count": 0, "customer_email": None, "opportunity_id": None},  # "we lost Globex"
+], ids=["chit_chat", "closed_lost"])
+def test_ae_email_that_announces_no_deal_is_closed_quietly(settings, fields):
+    """Any mail from a known AE is read (AEs don't always write 'Closed Won'), so most of their everyday mail
+    reaches extraction. Zero closed-won deals -> no reply, no call, no escalation; recorded as NOT_A_DEAL."""
+    h, rid = run(settings, fields=fields)
+    assert h.status(rid) == "NOT_A_DEAL"
+    assert h.world.gmail.sent == [] and h.world.voice.calls == [] and h.world.rocketlane.projects == []
+    assert h.store.list_escalations() == []
+    assert "not_a_deal" in audit_steps(h, rid)

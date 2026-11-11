@@ -22,9 +22,9 @@ const STATUS = {  // run.status -> [chip label, tone, list group]
   AWAITING_CALL: ["On a call", "active", "active"], AWAITING_RETRY: ["Retrying call", "active", "active"],
   TIER_CONFIRMED: ["Creating project", "active", "active"], PROJECT_CREATED: ["Setting up Slack", "active", "active"],
   COMPLETED: ["In onboarding", "ok", "done"], HANDED_OFF: ["Handed off", "ok", "done"],
-  ESCALATED: ["Needs a human", "warn", "attn"], FAILED: ["Error", "bad", "attn"], CANCELLED: ["Cancelled", "idle", "done"],
+  ESCALATED: ["Needs a human", "warn", "attn"], FAILED: ["Error", "bad", "attn"], CANCELLED: ["Cancelled", "idle", "done"], NOT_A_DEAL: ["Not a deal email", "idle", "done"],
 };
-const TERMINAL = new Set(["HANDED_OFF", "CANCELLED", "FAILED"]);
+const TERMINAL = new Set(["HANDED_OFF", "CANCELLED", "FAILED", "NOT_A_DEAL"]);
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const app = document.getElementById("app");
