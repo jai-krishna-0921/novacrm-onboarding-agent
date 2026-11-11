@@ -4,7 +4,7 @@ strict xfails."""
 
 import pytest
 from test_migration_check import rows
-from test_tracking import FACTS, OK, api, mark, mig_escalations, project, slack_messages, task, tracker  # noqa: F401
+from test_tracking import FACTS, OK, api, headlines, mark, mig_escalations, project, slack_messages, task, tracker  # noqa: F401
 
 from app.db.seed import demo_contacts
 from app.guardrails.output import check_handoff
@@ -52,7 +52,7 @@ def test_reopen_failure_does_not_announce_data_migration_to_customer(ent):
     mark(h, phase="Data Migration")
     t.sync(rid)
     # Customer must not be told Data Migration is complete while the agent itself says it is unverified.
-    assert progress_message("Data Migration") not in slack_messages(h)
+    assert progress_message("Data Migration") not in headlines(h)
 
 
 def test_failing_recheck_after_acceptance_blocks_handoff(ent):
@@ -194,7 +194,7 @@ def test_failed_progress_post_is_retried_on_a_later_sync(ent):
     mark(h, phase="Kickoff")
     t.sync(rid)
     t.sync(rid)
-    assert slack_messages(h) == [progress_message("Kickoff")]
+    assert headlines(h) == [progress_message("Kickoff")]
 
 
 def test_task_order_change_is_not_a_change(ent):
@@ -215,7 +215,7 @@ def test_two_completed_phases_and_mv_in_one_sync_post_each_phase_once(ent):
     mark(h, phase="Data Migration")   # import + MV ticked together; check passes first, MV accepted
     t.sync(rid)
     t.sync(rid)
-    assert slack_messages(h) == [progress_message("Kickoff"), progress_message("Data Migration")]
+    assert headlines(h) == [progress_message("Kickoff"), progress_message("Data Migration")]
     assert _set_status_calls(h, rid) == []
 
 

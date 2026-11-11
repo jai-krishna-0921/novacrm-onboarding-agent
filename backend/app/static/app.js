@@ -716,7 +716,7 @@ function backButton() {
 }
 
 const TABS = [{ value: "activity", label: "Activity" }, { value: "progress", label: "Project progress" },
-  { value: "migration", label: "Migration check" }, { value: "tech", label: "Technical" }];
+  { value: "migration", label: "Migration check" }, { value: "tech", label: "AI & tools" }];
 
 function renderRun(data, escs) {
   const run = data.run;
@@ -1062,16 +1062,22 @@ function renderBehind(run, data) {
       el("div", { class: "stat" }, el("b", {}, String(llm.calls ?? 0)), el("small", {}, "LLM calls")),
       el("div", { class: "stat" }, el("b", {}, `${llm.input_tokens ?? 0} / ${llm.output_tokens ?? 0}`), el("small", {}, "Tokens in / out")),
       el("div", { class: "stat" }, el("b", {}, `$${Number(llm.cost_usd || 0).toFixed(4)}`), el("small", {}, "LLM cost"))),
-    (llm.by_node || []).length ? el("details", {}, el("summary", {}, "LLM calls by step"),
-      table(["Time", "Step", "Model", "Tokens", "Latency"], llm.by_node.map((r) => el("tr", {},
-        el("td", {}, fmtTime(r.ts)), el("td", {}, `${r.agent || ""}/${r.node || ""}`), el("td", { class: "mono" }, r.model || ""),
-        el("td", {}, `${r.input_tokens ?? 0} / ${r.output_tokens ?? 0}`), el("td", {}, r.latency_ms != null ? `${r.latency_ms} ms` : ""))))) : null,
-    el("details", {}, el("summary", {}, `Tool calls (${calls.length})`),
-      calls.length ? table(["Time", "Tool", "Result", "Try", ""], calls.map((t) => el("tr", {},
-        el("td", {}, fmtTime(t.ts)), el("td", { class: "mono" }, t.tool || ""),
-        el("td", {}, chip(t.status || "", t.status === "ok" ? "ok" : "bad")), el("td", {}, t.attempt != null ? String(t.attempt) : ""),
-        el("td", {}, el("details", {}, el("summary", {}, "Data"), json({ args: t.args, result: t.result }))))))
-        : el("p", { class: "small muted" }, "No tool calls yet.")),
+    el("div", { class: "chips", style: "margin:10px 0 4px" }, "Models used: ",
+      [...new Set((llm.by_node || []).map((r) => r.model).filter(Boolean))].map((m) => chip(m, "active"))),
+    el("h3", { class: "section-title" }, `LLM calls (${(llm.by_node || []).length})`),
+    (llm.by_node || []).length ? table(["Time", "Agent / step", "Model", "Prompt", "Tokens in / out", "Latency", "Cost", "Stop"],
+      llm.by_node.map((r) => el("tr", {},
+        el("td", {}, fmtTime(r.ts)), el("td", {}, `${r.agent || ""} / ${r.node || ""}`), el("td", { class: "mono" }, r.model || ""),
+        el("td", { class: "mono" }, r.prompt_version || ""), el("td", {}, `${r.input_tokens ?? 0} / ${r.output_tokens ?? 0}`),
+        el("td", {}, r.latency_ms != null ? `${(r.latency_ms / 1000).toFixed(1)} s` : ""),
+        el("td", {}, r.cost_usd != null ? `$${Number(r.cost_usd).toFixed(5)}` : ""), el("td", { class: "small" }, r.stop_reason || ""))))
+      : el("p", { class: "small muted" }, "No LLM calls yet."),
+    el("h3", { class: "section-title" }, `Tool calls (${calls.length})`),
+    calls.length ? table(["Time", "Agent", "Tool", "Result", "Try", ""], calls.map((t) => el("tr", {},
+      el("td", {}, fmtTime(t.ts)), el("td", {}, t.agent || ""), el("td", { class: "mono" }, t.tool || ""),
+      el("td", {}, chip(t.status || "", t.status === "ok" ? "ok" : "bad")), el("td", {}, t.attempt != null ? String(t.attempt) : ""),
+      el("td", {}, el("details", {}, el("summary", {}, "Input / output"), json({ args: t.args, result: t.result }))))))
+      : el("p", { class: "small muted" }, "No tool calls yet."),
     el("dl", { class: "kv", style: "margin-top:12px" }, el("dt", {}, "Run id"), el("dd", { class: "mono" }, run.id),
       run.gmail_message_id ? [el("dt", {}, "Gmail message"), el("dd", { class: "mono" }, run.gmail_message_id)] : null));
   body.querySelectorAll("details").forEach((d, i) => { if (open[i]) d.open = true; });

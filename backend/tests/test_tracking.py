@@ -49,6 +49,11 @@ def slack_messages(h):
     return ch["messages"][1:]  # [0] is the welcome
 
 
+def headlines(h):
+    """First line of each progress post (the rest is the progress bar / checklist)."""
+    return [m.splitlines()[0] for m in slack_messages(h)]
+
+
 def mig_escalations(h, rid, status=None):
     return [e for e in h.store.list_escalations(status) if e["run_id"] == rid and e.get("kind") == "migration"]
 
@@ -101,14 +106,14 @@ def test_completed_phase_posts_one_template_message_once(ent):
     mark(h, phase="Kickoff")
     out = t.sync(rid)
     assert out["actions"] == ["Kickoff complete: progress posted"]
-    assert slack_messages(h) == [progress_message("Kickoff")]
+    assert headlines(h) == [progress_message("Kickoff")]
     t.sync(rid)
     # Reopened and re-completed in Rocketlane: still one post per phase.
     mark(h, "Kickoff call", status=TODO)
     t.sync(rid)
     mark(h, "Kickoff call")
     t.sync(rid)
-    assert slack_messages(h) == [progress_message("Kickoff")]
+    assert headlines(h) == [progress_message("Kickoff")]
 
 
 @pytest.mark.parametrize("phase", PHASES)
@@ -256,7 +261,7 @@ def test_data_migration_phase_is_not_announced_when_verified_is_reopened(ent):
     t.sync(rid)
     mark(h, phase="Data Migration")
     t.sync(rid)
-    assert progress_message("Data Migration") not in slack_messages(h)
+    assert progress_message("Data Migration") not in headlines(h)
 
 
 # ---------------- rule d: handoff ----------------
@@ -274,7 +279,7 @@ def test_go_live_complete_writes_handoff_note_and_hands_off_never_to_slack(ent):
     assert h.status(rid) == "HANDED_OFF" and h.store.get_tracking(rid)["handed_off_at"]
     msgs = slack_messages(h)
     assert all(summary not in m and "handoff" not in m.lower() for m in msgs)
-    assert msgs[-1] == progress_message("Go-Live")
+    assert msgs[-1].splitlines()[0] == progress_message("Go-Live")
     # Handed-off runs are no longer synced.
     assert rid not in t.due_runs()
     assert t.sync(rid)["skipped"] == "already handed off"
@@ -536,3 +541,48 @@ def test_container_wires_the_handoff_model_into_the_tracking_llm():
     from app import container
     src = inspect.getsource(container.build_container)
     assert "llm_handoff_model" in src
+
+
+# ---------------- Slack progress update (user request: the channel should show steps and progress) ----------------
+
+def _tasks(done_by_phase: dict[str, tuple[int, int]]) -> list[dict]:
+    out = []
+    for phase, (done, total) in done_by_phase.items():
+        out += [{"name": f"{phase} task {i}", "phase": phase, "completed": i < done} for i in range(total)]
+    return out
+
+
+def test_progress_update_shows_bar_counts_phase_checklist_and_next_phase():
+    from app.services.tracking import progress_update
+    tasks = _tasks({"Kickoff": (3, 3), "Data Migration": (1, 5), "Configuration": (0, 4), "Go-Live": (0, 4)})
+    msg = progress_update("Kickoff", tasks)
+    assert msg.splitlines()[0] == progress_message("Kickoff")
+    assert "4 of 16 tasks done (25%)" in msg
+    assert ":white_check_mark: Kickoff" in msg and ":hourglass_flowing_sand: Data Migration" in msg
+    assert "Configuration" in msg and "Go-Live" in msg
+    assert "Next up: *Data Migration* (1 of 5 tasks done)" in msg
+
+
+def test_progress_update_on_last_phase_thanks_the_customer():
+    from app.services.tracking import progress_update
+    msg = progress_update("Go-Live", _tasks({p: (n, n) for p, n in zip(PHASES, (3, 5, 4, 4), strict=True)}))
+    assert "16 of 16 tasks done (100%)" in msg and "Next up" not in msg and "Thank you" in msg
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_progress_update_never_leaks_task_names_or_internal_words(phase):
+    from app.services.tracking import progress_update
+    tasks = _tasks({p: (2, 3) for p in PHASES}) + [
+        {"name": "Internal: escalate Acme's failed duplicate export", "phase": "Data Migration", "completed": False}]
+    msg = progress_update(phase, tasks).lower()
+    assert "internal" not in msg and not any(w in msg for w in INTERNAL_WORDS)
+
+
+def test_phase_completion_posts_the_full_progress_update(ent):
+    h, rid = ent
+    for t in project(h)["tasks"]:
+        if (t.get("phase") or {}).get("phaseName") == "Kickoff":
+            t["status"] = {"value": 3, "label": "Completed"}
+    tracker(h).sync(rid)
+    [msg] = slack_messages(h)
+    assert msg.startswith(progress_message("Kickoff")) and "tasks done" in msg and "Next up: *Data Migration*" in msg

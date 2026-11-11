@@ -43,10 +43,36 @@ SKIP_STATUSES = {"CANCELLED", "FAILED"}
 
 
 def progress_message(phase: str) -> str:
-    """Fixed, customer-safe text. Only called with a name from PHASES."""
+    """Fixed, customer-safe headline. Only called with a name from PHASES."""
+    PHASES.index(phase)
+    return f":white_check_mark: The *{phase}* phase of your NovaCRM onboarding is complete."
+
+
+def progress_update(phase: str, tasks: list[dict]) -> str:
+    """Headline + overall progress bar + phase checklist + what's next. Counts only: task names never appear
+    (the channel is shared with the customer, and task names can be internal)."""
+    ours = [t for t in tasks if t.get("phase") in PHASES]
+    done, total = sum(bool(t["completed"]) for t in ours), len(ours)
+    pct = round(100 * done / total) if total else 0
+    bar = "\u2593" * round(pct / 10) + "\u2591" * (10 - round(pct / 10))
+
+    def counts(p: str) -> tuple[int, int]:
+        ts = [t for t in ours if t.get("phase") == p]
+        return sum(bool(t["completed"]) for t in ts), len(ts)
+
+    def icon(p: str) -> str:
+        d, n = counts(p)
+        return ":white_check_mark:" if n and d == n else (":hourglass_flowing_sand:" if d else ":white_circle:")
+
+    lines = [progress_message(phase), f"`{bar}` {done} of {total} tasks done ({pct}%)",
+             "   ".join(f"{icon(p)} {p}" for p in PHASES)]
     i = PHASES.index(phase)
-    nxt = f"Next up: *{PHASES[i + 1]}*." if i + 1 < len(PHASES) else "Thank you for working through it with us!"
-    return f":white_check_mark: The *{phase}* phase of your NovaCRM onboarding is complete. {nxt}"
+    if i + 1 < len(PHASES):
+        d, n = counts(PHASES[i + 1])
+        lines.append(f"Next up: *{PHASES[i + 1]}* ({d} of {n} tasks done).")
+    else:
+        lines.append("All phases are complete. Thank you for working through it with us!")
+    return "\n".join(lines)
 
 
 def static_handoff(f: dict) -> str:
@@ -146,7 +172,7 @@ class Tracker:
         for phase in PHASES:
             newly = not _phase_done(list(before.values()), phase)
             if _phase_done(tasks, phase) and (newly or self._unposted(run, phase)):
-                actions.append(self._announce(run, phase))
+                actions.append(self._announce(run, phase, tasks))
 
         self.store.upsert_tracking(run_id, tasks=tasks, synced_at=now())
         # d. handoff: state-based so a failed note write is retried on the next sync
@@ -162,14 +188,14 @@ class Tracker:
     def _unposted(self, run: dict, phase: str) -> bool:
         return bool(run.get("slack_channel_id")) and self.store.get_idem(f"{run['id']}:progress:{phase}") is None
 
-    def _announce(self, run: dict, phase: str) -> str:
+    def _announce(self, run: dict, phase: str, tasks: list[dict]) -> str:
         channel = run.get("slack_channel_id")
         if not channel:
             audit(self.store, run["id"], AGENT, "phase_complete", status="degraded",
                   rationale=f"{phase} complete; no Slack channel on this run, nothing posted")
             return f"{phase} complete (no Slack channel)"
         try:
-            self.registry.call(AGENT, "slack_post_message", {"channel_id": channel, "text": progress_message(phase)},
+            self.registry.call(AGENT, "slack_post_message", {"channel_id": channel, "text": progress_update(phase, tasks)},
                                run_id=run["id"], idempotency_key=f"{run['id']}:progress:{phase}",
                                rationale=f"all {phase} tasks completed; template progress update (once per phase)")
         except ToolFailed as e:
