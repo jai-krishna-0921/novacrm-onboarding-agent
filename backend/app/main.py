@@ -5,10 +5,10 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,11 +18,13 @@ from app.auth import Auth
 from app.config import Settings
 from app.container import Container
 from app.guardrails.decision import CallResult
+from app.llm.client import PRICES
 from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
-from app.services.audit import audit
+from app.services.audit import audit, redact
 from app.services.migration_check import MigrationDataUnavailable, run_migration_check
 from app.services.runner import AWAITING, MID_NODE
+from app.services.store import LATENCY_EDGES_MS
 from app.services.tracking import Tracker, tracking_view
 from app.tools.registry import PermanentToolError, ToolFailed
 
@@ -38,6 +40,26 @@ class Dismissal(BaseModel):
     """A CSM accepting a migration-check failure (e.g. a known junk row). Both fields are required and audited."""
     reason: str = Field(min_length=1, pattern=r"\S")
     by: str = Field(min_length=1, pattern=r"\S")
+
+
+def _since(raw: str | None) -> str | None:
+    """ISO date/datetime -> UTC isoformat, comparable with the stored ts strings. Naive means UTC."""
+    if raw is None:
+        return None
+    try:
+        d = datetime.fromisoformat(raw)
+    except ValueError as e:
+        raise HTTPException(422, "since must be an ISO date or datetime") from e
+    return (d if d.tzinfo else d.replace(tzinfo=UTC)).astimezone(UTC).isoformat()
+
+
+def _bucket_labels() -> list[str]:
+    s = [e // 1000 for e in LATENCY_EDGES_MS]
+    return [f"< {s[0]} s", *(f"{a}-{b} s" for a, b in zip(s, s[1:], strict=False)), f"{s[-1]} s+"]
+
+
+LIMIT = Query(25, ge=1, le=200)
+OFFSET = Query(0, ge=0)
 
 
 class Resolution(BaseModel):
@@ -336,6 +358,49 @@ def create_app(c: Container | None = None) -> FastAPI:
             audit(k.store, run_id, "migration", "dismiss_migration_escalation",
                   input={"by": body.by}, rationale=f"dismissed by {body.by}: {body.reason}")
         return {"ok": True, "dismissed": [e["key"] for e in open_esc]}
+
+    # ---------- observability (sidebar pages; aggregation runs in the store) ----------
+    @app.get("/metrics/overview")
+    def metrics_overview():
+        return container().store.overview_stats()
+
+    @app.get("/metrics/llm")
+    def metrics_llm(since: str | None = None, days: int = Query(14, ge=1, le=90)):
+        stats = container().store.llm_stats(_since(since))
+        today = datetime.now(UTC).date()
+        by_day = {d["day"]: d for d in stats["by_day"]}
+        empty = {k: (0 if k.startswith(("calls", "input", "output", "cost")) else None)
+                 for k in stats["totals"]}
+        series = [{**empty, **by_day.get(day, {}), "day": day}
+                  for day in ((today - timedelta(days=n)).isoformat() for n in range(days - 1, -1, -1))]
+        return {**stats, "series": series, "latency_bucket_labels": _bucket_labels(),
+                "prices_usd_per_mtok": PRICES, "prices_estimated": True}
+
+    @app.get("/llm-calls")
+    def llm_calls_page(limit: int = LIMIT, offset: int = OFFSET, model: str | None = None,
+                       node: str | None = None, run_id: str | None = None, since: str | None = None):
+        page = container().store.page_llm_calls(limit=limit, offset=offset, model=model, node=node, run_id=run_id,
+                                                since=_since(since))
+        return {"total": page["total"], "limit": limit, "offset": offset, "rows": page["rows"]}
+
+    @app.get("/metrics/tools")
+    def metrics_tools(since: str | None = None):
+        return {"tools": container().store.tool_stats(_since(since))}
+
+    @app.get("/tool-calls")
+    def tool_calls_page(limit: int = LIMIT, offset: int = OFFSET, tool: str | None = None,
+                        agent: str | None = None, status: str | None = None, run_id: str | None = None,
+                        since: str | None = None):
+        page = container().store.page_tool_calls(limit=limit, offset=offset, tool=tool, agent=agent, status=status,
+                                                 run_id=run_id, since=_since(since))
+        return {"total": page["total"], "limit": limit, "offset": offset, "rows": page["rows"]}
+
+    @app.get("/tool-calls/{call_id}")
+    def tool_call_detail(call_id: int):
+        row = container().store.get_tool_call(call_id)
+        if not row:
+            raise HTTPException(404, "tool call not found")
+        return redact(row)  # payloads were redacted when written; mask again in case a writer skipped it
 
     @app.post("/admin/gmail/watch")
     def gmail_watch():

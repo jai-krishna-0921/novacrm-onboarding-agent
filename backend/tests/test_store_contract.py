@@ -140,3 +140,128 @@ def test_tracking_upsert_merges_fields_and_rejects_unknown(store):
     assert store.get_tracking("r2") is None
     with pytest.raises(ValueError, match="unknown tracking fields"):
         store.upsert_tracking("r1", status="x")
+
+
+# ---------- observability queries (dashboard sidebar pages) ----------
+def _llm(store, run_id, ts, *, model="claude-haiku-5-5", node="extract_fields", prompt="extract_v3", lat=100,
+         tin=10, tout=5, cost=0.001, agent="intake"):
+    store.add_llm_call(dict(run_id=run_id, ts=ts, agent=agent, node=node, model=model, prompt_version=prompt,
+                            input_tokens=tin, output_tokens=tout, latency_ms=lat, cost_usd=cost, stop_reason="end_turn"))
+
+
+def _tool(store, run_id, ts, *, tool="ae_lookup", status="ok", agent="intake", lat=50, args=None, result=None):
+    store.add_tool_call(dict(run_id=run_id, ts=ts, agent=agent, tool=tool, args=args or {"email": "ae@x.example"},
+                             result=result or {"phone": "*******3210"}, status=status, attempt=1, latency_ms=lat,
+                             idempotency_key=f"k-{ts}"))
+
+
+def test_page_llm_calls_is_newest_first_filtered_counted_and_named(store):
+    store.upsert_run("r1", customer_name="Globex")
+    for i in range(5):
+        _llm(store, "r1", f"2026-11-1{i}T10:00:00+00:00", model="claude-haiku-5-5" if i % 2 else "fake",
+             node="extract_fields" if i < 3 else "draft_welcome")
+    _llm(store, "r2", "2026-11-15T10:00:00+00:00")  # run row missing: customer_name is None
+    page = store.page_llm_calls(limit=2, offset=0)
+    assert page["total"] == 6 and [r["ts"][:10] for r in page["rows"]] == ["2026-11-15", "2026-11-14"]
+    assert page["rows"][0]["customer_name"] is None and page["rows"][1]["customer_name"] == "Globex"
+    assert isinstance(page["rows"][0]["id"], int) and page["rows"][1]["cost_usd"] == 0.001
+    assert [r["ts"][:10] for r in store.page_llm_calls(limit=2, offset=4)["rows"]] == ["2026-11-11", "2026-11-10"]
+    assert store.page_llm_calls(limit=10, offset=0, model="fake")["total"] == 3
+    assert store.page_llm_calls(limit=10, offset=0, node="draft_welcome", run_id="r1")["total"] == 2
+    assert store.page_llm_calls(limit=10, offset=0, run_id="r2")["total"] == 1
+    assert store.page_llm_calls(limit=10, offset=0, since="2026-11-13")["total"] == 3
+
+
+def test_page_tool_calls_never_carries_payloads_and_detail_does(store):
+    store.upsert_run("r1", customer_name="Globex")
+    _tool(store, "r1", "2026-11-10T10:00:00+00:00")
+    _tool(store, "r1", "2026-11-11T10:00:00+00:00", tool="slack_post_message", status="failed", agent="comms")
+    _tool(store, "r2", "2026-11-12T10:00:00+00:00", result={"error": "boom"}, status="failed")
+    page = store.page_tool_calls(limit=10, offset=0)
+    assert page["total"] == 3 and [r["ts"][:10] for r in page["rows"]] == ["2026-11-12", "2026-11-11", "2026-11-10"]
+    for r in page["rows"]:
+        assert "args" not in r and "result" not in r
+    assert page["rows"][1]["customer_name"] == "Globex"
+    assert page["rows"][1]["idempotency_key"] == "k-2026-11-11T10:00:00+00:00"
+    assert store.page_tool_calls(limit=10, offset=0, status="failed")["total"] == 2
+    assert store.page_tool_calls(limit=10, offset=0, tool="ae_lookup", status="failed")["total"] == 1
+    assert store.page_tool_calls(limit=10, offset=0, agent="comms")["total"] == 1
+    assert store.page_tool_calls(limit=1, offset=1, run_id="r1")["rows"][0]["tool"] == "ae_lookup"
+    one = store.get_tool_call(page["rows"][0]["id"])
+    assert one["result"] == {"error": "boom"} and one["args"] == {"email": "ae@x.example"} and one["run_id"] == "r2"
+    assert store.get_tool_call(987654) is None
+
+
+def test_llm_stats_totals_groups_percentiles_and_since(store):
+    for i, lat in enumerate([100, 200, 300, 400, 1000]):
+        _llm(store, "r1", f"2026-11-1{i}T10:00:00+00:00", lat=lat, tin=10 * (i + 1), tout=i, cost=0.25)
+    _llm(store, "r1", "2026-11-14T11:00:00+00:00", model="fake", node="draft_welcome", prompt="welcome_v1",
+         lat=9000, tin=0, tout=0, cost=0.0, agent="comms")
+    s = store.llm_stats()
+    t = s["totals"]
+    assert (t["calls"], t["input_tokens"], t["output_tokens"], t["cost_usd"]) == (6, 150, 10, 1.25)
+    haiku = next(g for g in s["by_model"] if g["model"] == "claude-haiku-5-5")
+    # percentile_cont semantics: p95 of [100,200,300,400,1000] = 400 + 0.8 * 600
+    assert (haiku["calls"], haiku["avg_latency_ms"], haiku["p50_latency_ms"], haiku["p95_latency_ms"]) == (5, 400, 300, 880)
+    assert [g["model"] for g in s["by_model"]] == ["claude-haiku-5-5", "fake"]  # most calls first
+    assert {(g["agent"], g["node"]) for g in s["by_node"]} == {("intake", "extract_fields"), ("comms", "draft_welcome")}
+    assert {g["prompt_version"]: g["calls"] for g in s["by_prompt"]} == {"extract_v3": 5, "welcome_v1": 1}
+    assert [(d["day"], d["calls"]) for d in s["by_day"]] == [
+        ("2026-11-10", 1), ("2026-11-11", 1), ("2026-11-12", 1), ("2026-11-13", 1), ("2026-11-14", 2)]
+    assert s["latency_buckets"] == [4, 1, 0, 0, 1]  # <1s, 1-2s, 2-4s, 4-8s, 8s+
+    since = store.llm_stats(since="2026-11-14")
+    assert since["totals"]["calls"] == 2 and since["totals"]["p95_latency_ms"] == 8600
+
+
+def test_llm_stats_empty(store):
+    s = store.llm_stats()
+    assert s["totals"]["calls"] == 0 and s["totals"]["cost_usd"] == 0 and s["totals"]["p95_latency_ms"] is None
+    assert s["by_model"] == [] and s["by_day"] == [] and s["latency_buckets"] == [0, 0, 0, 0, 0]
+
+
+def test_tool_stats_counts_failures_replays_and_blocks(store):
+    for lat in (10, 20, 30, 40):
+        _tool(store, "r1", f"2026-11-10T10:00:{lat}+00:00", lat=lat)
+    _tool(store, "r1", "2026-11-10T10:01:00+00:00", status="failed", lat=200)
+    _tool(store, "r1", "2026-11-10T10:02:00+00:00", tool="slack_post_message")
+    for status in ("replayed", "replayed", "blocked", "ok"):
+        store.add_audit(dict(run_id="r1", ts="2026-11-10T10:03:00+00:00", agent="intake", step="tool:ae_lookup",
+                             input=None, output=None, rationale="x", status=status))
+    store.add_audit(dict(run_id="r1", ts="2026-11-10T10:03:00+00:00", agent="comms", step="tool:gmail_reply",
+                         input=None, output=None, rationale="x", status="blocked"))
+    stats = {s["tool"]: s for s in store.tool_stats()}
+    ae = stats["ae_lookup"]
+    assert (ae["calls"], ae["ok"], ae["failed"], ae["replayed"], ae["blocked"]) == (5, 4, 1, 2, 1)
+    assert ae["failure_rate"] == 0.2 and ae["avg_latency_ms"] == 60 and ae["p95_latency_ms"] == 168
+    assert stats["slack_post_message"]["failure_rate"] == 0.0
+    assert stats["gmail_reply"]["calls"] == 0 and stats["gmail_reply"]["blocked"] == 1
+    assert [s["tool"] for s in store.tool_stats()][0] == "ae_lookup"  # most calls first
+    assert store.tool_stats(since="2026-11-11") == []
+
+
+def test_overview_stats(store):
+    store.upsert_run("a", status="COMPLETED", customer_name="A")
+    store.upsert_run("b", status="COMPLETED")
+    store.upsert_run("c", status="ESCALATED")
+    created = store.get_run("a")["created_at"]
+    from datetime import datetime, timedelta
+    base = datetime.fromisoformat(created)
+    _tool(store, "a", (base + timedelta(seconds=90)).isoformat(), tool="rocketlane_create_project")
+    _tool(store, "a", (base + timedelta(seconds=300)).isoformat(), tool="rocketlane_create_project")  # later: ignored
+    _tool(store, "b", (base + timedelta(seconds=30)).isoformat(), tool="rocketlane_create_project", status="failed")
+    for st in ("ok", "ok", "failed"):
+        _tool(store, "a", created, tool="voice_start_call", status=st)
+    for st in ("confirmed", "no_answer", "unclear", "unclear"):
+        store.add_audit(dict(run_id="a", ts=created, agent="intake", step="decide_tier", input=None, output=None,
+                             rationale="x", status=st))
+    store.upsert_escalation("c:1", dict(run_id="c", reason="r", kind="tier", agent="intake", status="open"))
+    store.upsert_escalation("c:0", dict(run_id="c", reason="r", kind="tier", agent="intake", status="resolved"))
+    _llm(store, "a", created, cost=0.5)
+    _llm(store, "b", created, cost=0.25)
+    o = store.overview_stats()
+    assert o["runs_total"] == 3 and o["runs_by_status"] == {"COMPLETED": 2, "ESCALATED": 1}
+    assert o["runs_by_day"] == [{"day": created[:10], "runs": 3}]
+    assert o["escalations_open"] == 1
+    assert o["email_to_project"]["runs"] == 1 and 89 <= o["email_to_project"]["avg_seconds"] <= 91
+    assert o["calls"] == {"placed": 2, "confirmed": 1, "unclear": 2, "no_answer": 1}
+    assert o["llm_calls"] == 2 and o["llm_cost_usd"] == 0.75

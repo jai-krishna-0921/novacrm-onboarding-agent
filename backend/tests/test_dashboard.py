@@ -63,3 +63,25 @@ def test_html_pages_are_revalidated_so_asset_version_bumps_reach_browsers(settin
     c = client(settings)
     for path in ("/ui", "/ui/login"):
         assert c.get(path).headers.get("cache-control") == "no-cache", path
+
+
+def test_sidebar_has_operations_and_observability_pages(settings):
+    html = client(settings).get("/ui").text
+    for route in ("#/overview", "#/runs", "#/escalations", "#/ai", "#/tools"):
+        assert f'href="{route}"' in html, route
+    assert "Operations" in html and "Observability" in html
+
+
+def test_observability_pages_use_the_paged_endpoints(settings):
+    c = client(settings)
+    js = c.get("/ui/assets/app.js").text
+    for path in ("/metrics/overview", "/metrics/llm", "/metrics/tools", "/llm-calls?", "/tool-calls?", "/tool-calls/${"):
+        assert path in js, path
+    for path in ("/metrics/overview", "/metrics/llm", "/metrics/tools", "/llm-calls", "/tool-calls"):
+        assert c.get(path).status_code == 200, path
+
+
+def test_asset_cache_buster_is_shared_by_css_and_js(settings):
+    html = client(settings).get("/ui").text
+    versions = set(re.findall(r'/ui/assets/app\.(?:css|js)\?v=([\w.-]+)', html))
+    assert len(versions) == 1 and versions != {"10b"}

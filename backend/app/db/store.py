@@ -14,16 +14,32 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    case,
     cast,
     create_engine,
     delete,
+    func,
     insert,
     select,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.services.store import IN_FLIGHT, TRACKING_FIELDS, _reservation, now
+from app.services.store import (
+    CALL_TOOL,
+    CREATE_PROJECT_TOOL,
+    IN_FLIGHT,
+    LATENCY_EDGES_MS,
+    LLM_ROW_FIELDS,
+    TOOL_ROW_FIELDS,
+    TRACKING_FIELDS,
+    _reservation,
+    by_calls,
+    email_to_project,
+    llm_group,
+    merge_tool_stats,
+    now,
+)
 from app.services.store import RUN_FIELDS as SHARED_RUN_FIELDS
 
 metadata = MetaData()
@@ -167,6 +183,105 @@ class PgStore:
 
     def list_migration_checks(self, run_id: str) -> list[dict]:
         return self._list(migration_checks, run_id)
+
+    # ---------- observability: filtering, paging and aggregation run in SQL ----------
+    def _page(self, table, fields: tuple, limit: int, offset: int, since: str | None, **eq: str | None) -> dict:
+        where = [table.c[k] == v for k, v in eq.items() if v is not None]
+        if since is not None:
+            where.append(table.c.ts >= since)
+        cols = [runs.c.customer_name if f == "customer_name" else table.c[f] for f in fields]
+        q = (select(*cols).select_from(table.outerjoin(runs, runs.c.id == table.c.run_id)).where(*where)
+             .order_by(table.c.id.desc()).limit(limit).offset(offset))
+        with self.engine.connect() as c:
+            total = c.execute(select(func.count()).select_from(table).where(*where)).scalar_one()
+            rows = _rows(c.execute(q))
+        for r in rows:
+            if r.get("cost_usd") is not None:
+                r["cost_usd"] = float(r["cost_usd"])
+        return {"total": total, "rows": rows}
+
+    def page_llm_calls(self, *, limit, offset, model=None, node=None, run_id=None, since=None):
+        return self._page(llm_calls, LLM_ROW_FIELDS, limit, offset, since, model=model, node=node, run_id=run_id)
+
+    def page_tool_calls(self, *, limit, offset, tool=None, agent=None, status=None, run_id=None, since=None):
+        return self._page(tool_calls, TOOL_ROW_FIELDS, limit, offset, since, tool=tool, agent=agent,
+                          status=status, run_id=run_id)
+
+    def get_tool_call(self, call_id: int) -> dict | None:
+        q = (select(tool_calls, runs.c.customer_name)
+             .select_from(tool_calls.outerjoin(runs, runs.c.id == tool_calls.c.run_id))
+             .where(tool_calls.c.id == call_id))
+        with self.engine.connect() as c:
+            r = c.execute(q).first()
+        return dict(r._mapping) if r else None
+
+    def llm_stats(self, since: str | None = None) -> dict:
+        t = llm_calls.c
+        where = [t.ts >= since] if since is not None else []
+        aggs = [func.count(), func.sum(t.input_tokens), func.sum(t.output_tokens), func.sum(t.cost_usd),
+                func.avg(t.latency_ms), func.percentile_cont(.5).within_group(t.latency_ms),
+                func.percentile_cont(.95).within_group(t.latency_ms)]
+        day = func.substr(t.ts, 1, 10)
+        bucket = case(*[(t.latency_ms < edge, i) for i, edge in enumerate(LATENCY_EDGES_MS)],
+                      else_=len(LATENCY_EDGES_MS))
+        with self.engine.connect() as c:
+            def groups(*keys) -> list[tuple]:
+                q = select(*keys, *aggs).where(*where)
+                return list(c.execute(q.group_by(*keys) if keys else q))
+
+            totals = llm_group(*groups()[0])
+            by_model = [{"model": r[0], **llm_group(*r[1:])} for r in groups(t.model)]
+            by_node = [{"agent": r[0], "node": r[1], **llm_group(*r[2:])} for r in groups(t.agent, t.node)]
+            by_prompt = [{"prompt_version": r[0], **llm_group(*r[1:])} for r in groups(t.prompt_version)]
+            by_day = sorted(({"day": r[0], **llm_group(*r[1:])} for r in groups(day)), key=lambda d: d["day"])
+            hist = c.execute(select(bucket, func.count()).where(t.latency_ms.is_not(None), *where).group_by(bucket))
+            buckets = [0] * (len(LATENCY_EDGES_MS) + 1)
+            for b, n in hist:
+                buckets[b] = n
+        return {"totals": totals, "by_model": by_calls(by_model, "model"),
+                "by_node": by_calls(by_node, "agent", "node"), "by_prompt": by_calls(by_prompt, "prompt_version"),
+                "by_day": by_day, "latency_buckets": buckets}
+
+    def tool_stats(self, since: str | None = None) -> list[dict]:
+        t, a = tool_calls.c, audit_log.c
+        ok, failed = (func.count().filter(t.status == s) for s in ("ok", "failed"))
+        q = select(t.tool, func.count(), ok, failed, func.avg(t.latency_ms),
+                   func.percentile_cont(.95).within_group(t.latency_ms))
+        aq = (select(a.step, a.status, func.count())
+              .where(a.step.like("tool:%"), a.status.in_(["replayed", "blocked"])))
+        if since is not None:
+            q, aq = q.where(t.ts >= since), aq.where(a.ts >= since)
+        with self.engine.connect() as c:
+            rows = [dict(tool=r[0], calls=r[1], ok=r[2], failed=r[3], avg=r[4], p95=r[5])
+                    for r in c.execute(q.group_by(t.tool))]
+            counts = {(r[0][5:], r[1]): r[2] for r in c.execute(aq.group_by(a.step, a.status))}
+        return merge_tool_stats(rows, counts)
+
+    def overview_stats(self) -> dict:
+        t, a = tool_calls.c, audit_log.c
+        day = func.substr(runs.c.created_at, 1, 10)
+        first = (select(runs.c.created_at, func.min(t.ts))
+                 .select_from(runs.join(tool_calls, tool_calls.c.run_id == runs.c.id))
+                 .where(t.tool == CREATE_PROJECT_TOOL, t.status == "ok").group_by(runs.c.id, runs.c.created_at))
+        with self.engine.connect() as c:
+            by_status = {(s or "UNKNOWN"): n for s, n in c.execute(select(runs.c.status, func.count())
+                                                                   .group_by(runs.c.status))}
+            by_day = [{"day": d, "runs": n} for d, n in c.execute(select(day, func.count()).group_by(day)
+                                                                  .order_by(day))]
+            esc_open = c.execute(select(func.count()).select_from(escalations)
+                                 .where(escalations.c.status == "open")).scalar_one()
+            pairs = [(r[0], r[1]) for r in c.execute(first)]
+            placed = c.execute(select(func.count()).select_from(tool_calls)
+                               .where(t.tool == CALL_TOOL, t.status == "ok")).scalar_one()
+            outcomes: dict[str, int] = dict(c.execute(select(a.status, func.count()).where(a.step == "decide_tier")
+                                      .group_by(a.status)).all())
+            n_llm, cost = c.execute(select(func.count(), func.sum(llm_calls.c.cost_usd))).one()
+        return {
+            "runs_total": sum(by_status.values()), "runs_by_status": by_status, "runs_by_day": by_day,
+            "escalations_open": esc_open, "email_to_project": email_to_project(pairs),
+            "calls": {"placed": placed, **{k: int(outcomes.get(k, 0)) for k in ("confirmed", "unclear", "no_answer")}},
+            "llm_calls": n_llm, "llm_cost_usd": round(float(cost or 0), 6),
+        }
 
     # project tracking (Agent 3)
     def get_tracking(self, run_id: str) -> dict | None:

@@ -415,7 +415,8 @@ function route() {
   const [name, id] = h.split("/");
   if (name === "runs" && id) return { name: "run", id: decodeURIComponent(id) };
   if (name === "escalations") return { name: "escalations", id: id ? decodeURIComponent(id) : null };
-  return { name: "runs" };
+  if (name === "runs" || name === "ai" || name === "tools") return { name };
+  return { name: "overview" };
 }
 
 let drawerBack = false;  // the drawer was opened from the inbox, so closing it can use history.back()
@@ -424,14 +425,14 @@ function navigate() {
   const prev = view;
   view = route();
   const drawerOnly = !!(prev && prev.name === "escalations" && view.name === "escalations");
-  if (view.name === "run") backTo = prev && prev.name !== "run" ? (prev.name === "escalations" ? "#/escalations" : "#/runs") : backTo;
+  if (view.name === "run") backTo = prev && prev.name !== "run" ? `#/${prev.name}` : backTo;
   else backTo = null;
   if (view.name === "escalations" && view.id) drawerBack = drawerOnly && !prev.id;
   transition = drawerOnly || !prev ? null : view.name === "run" ? "fwd" : prev.name === "run" ? "back" : "fwd";
-  if (!drawerOnly) ui = null;
+  if (!drawerOnly) { ui = null; document.body.classList.remove("locked"); }  // a side panel left open must not lock the next page
   setTitle();
   document.querySelectorAll("[data-nav]").forEach((a) => {
-    const on = a.dataset.nav === (view.name === "escalations" ? "escalations" : "runs");
+    const on = a.dataset.nav === (view.name === "run" ? "runs" : view.name);
     a.classList.toggle("active", on);
     if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
@@ -439,7 +440,9 @@ function navigate() {
   refresh(true);
 }
 
-const TITLES = { runs: "Onboarding runs", escalations: "Needs a human", run: "Run details" };
+const TITLES = { overview: "Overview", runs: "Onboarding runs", escalations: "Needs a human", run: "Run details",
+  ai: "AI usage", tools: "Tool calls" };
+const CRUMBS = { "#/escalations": "Needs a human", "#/overview": "Overview", "#/ai": "AI usage", "#/tools": "Tool calls" };
 
 function setTitle() {
   const title = TITLES[view.name] || "";
@@ -447,7 +450,7 @@ function setTitle() {
   document.title = `${title} | NovaCRM Onboarding`;
   const crumb = document.getElementById("crumb");
   crumb.hidden = view.name !== "run";
-  crumb.textContent = backTo === "#/escalations" ? "‹ Needs a human" : "‹ Runs";
+  crumb.textContent = `‹ ${CRUMBS[backTo] || "Runs"}`;
 }
 
 function goBack() {
@@ -492,6 +495,10 @@ async function load() {
       if (v !== view) return;
       cache.set(v.id, { sig: data.run.updated_at, at: Date.now(), data });
       paint(() => renderRun(data, escs));
+    } else if (OBS[v.name]) {
+      const data = await OBS[v.name].load();
+      if (v !== view) return;
+      paint(() => OBS[v.name].render(data, escs));
     } else {
       const runs = await api("/runs");
       if (v.name === "escalations" && v.id) {  // the open drawer always gets fresh detail
@@ -505,7 +512,7 @@ async function load() {
     setLive(true);
   } catch (e) {
     setLive(false, "Refresh failed");
-    if (!app.querySelector(".panel, .row, .inbox-item")) app.replaceChildren(errorBox(e));
+    if (!app.querySelector(".panel, .row, .inbox-item, .kpi")) app.replaceChildren(errorBox(e));
   }
 }
 
@@ -1092,6 +1099,390 @@ function renderBehind(run, data) {
   body.querySelectorAll("details").forEach((d, i) => { if (open[i]) d.open = true; });
 }
 
+// ---------- observability: overview, AI usage, tool calls (sidebar pages) ----------
+// Aggregates come from the API (computed in the store). Charts are hand-written SVG built with createElementNS;
+// every label is a text node. Costs are estimates from list prices (backend/app/llm/client.py PRICES).
+const SVGNS = "http://www.w3.org/2000/svg";
+const AGENTS = ["intake", "comms", "tracking", "migration", "root"];
+const CHART_DAYS = 14;
+
+function svgEl(tag, attrs, ...kids) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+  for (const c of kids) if (c !== null && c !== undefined) n.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return n;
+}
+
+const fmtInt = (n) => Number(n || 0).toLocaleString();
+const fmtUsd = (v, d = 4) => `$${Number(v || 0).toFixed(d)}`;
+function fmtMs(v) {
+  if (v === null || v === undefined) return "-";
+  return v < 1000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(v < 10000 ? 2 : 1)} s`;
+}
+function fmtDur(s) {
+  if (s === null || s === undefined) return "-";
+  s = Math.round(s);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+function shortDay(iso) {
+  const d = new Date(`${iso}T00:00:00`);
+  return isNaN(d) ? String(iso) : d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+function lastDays(n) {
+  const out = [];
+  const today = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i));
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function kpi(label, value, sub, tone) {
+  return el("div", { class: `kpi ${tone || ""}` }, el("span", { class: "kpi-k" }, label),
+    el("b", { class: "kpi-v" }, value), sub ? el("span", { class: "kpi-s" }, sub) : null);
+}
+
+// Vertical bars, one series. points: [{label, value}]. Labels are HTML (crisp at any width), bars are SVG.
+function barChart(points, fmt, name, sparse) {
+  const n = Math.max(points.length, 1);
+  const max = Math.max(0, ...points.map((p) => Number(p.value) || 0));
+  const s = svgEl("svg", { viewBox: `0 0 ${n * 10} 100`, preserveAspectRatio: "none", class: "bars", role: "img",
+    "aria-label": `${name}. ${points.map((p) => `${p.label} ${fmt(p.value)}`).join(", ")}` });
+  points.forEach((p, i) => {
+    const v = Number(p.value) || 0;
+    const h = v && max ? Math.max(2, (96 * v) / max) : 0;
+    s.append(svgEl("g", { class: "bar" }, svgEl("title", {}, `${p.label}: ${fmt(v)}`),
+      svgEl("rect", { class: "hit", x: i * 10, y: 0, width: 10, height: 100 }),
+      svgEl("rect", { class: "fill", x: i * 10 + 1.5, y: 100 - h, width: 7, height: h })));
+  });
+  s.append(svgEl("line", { class: "base", x1: 0, x2: n * 10, y1: 99.5, y2: 99.5 }));
+  const mid = Math.floor((n - 1) / 2);
+  const xs = el("div", { class: `chart-x${sparse ? " sparse" : ""}`, style: `grid-template-columns:repeat(${n},minmax(0,1fr))` },
+    points.map((p, i) => el("span", {}, !sparse || i === 0 || i === n - 1 || i === mid ? p.label : "")));
+  return el("div", { class: "chart" }, el("div", { class: "chart-max" }, `Peak ${fmt(max)}`), s, xs);
+}
+
+// Area sparkline for a daily series. points: [{label, value}]
+function sparkChart(points, fmt, name) {
+  const n = points.length;
+  const max = Math.max(0, ...points.map((p) => Number(p.value) || 0)) || 1;
+  const x = (i) => (n > 1 ? (i * 100) / (n - 1) : 50);
+  const y = (v) => 38 - (36 * (Number(v) || 0)) / max;
+  const line = points.map((p, i) => `${x(i).toFixed(2)},${y(p.value).toFixed(2)}`).join(" ");
+  const s = svgEl("svg", { viewBox: "0 0 100 40", preserveAspectRatio: "none", class: "spark", role: "img",
+    "aria-label": `${name}. ${points.map((p) => `${p.label} ${fmt(p.value)}`).join(", ")}` },
+  svgEl("polygon", { class: "area", points: `0,40 ${line} 100,40` }),
+  svgEl("polyline", { class: "line", points: line, "vector-effect": "non-scaling-stroke" }));
+  points.forEach((p, i) => {
+    const w = n > 1 ? 100 / (n - 1) : 100;
+    s.append(svgEl("rect", { class: "hit", x: Math.max(0, x(i) - w / 2), y: 0, width: w, height: 40 },
+      svgEl("title", {}, `${p.label}: ${fmt(p.value)}`)));
+  });
+  return el("div", { class: "chart" }, el("div", { class: "chart-max" }, `Peak ${fmt(Math.max(...points.map((p) => Number(p.value) || 0), 0))}`),
+    s, el("div", { class: "chart-x ends" }, el("span", {}, points.length ? points[0].label : ""),
+      el("span", {}, points.length ? points[n - 1].label : "")));
+}
+
+// heads: [label, cls?]; rows: arrays of cells (node or text). cls "num" right-aligns, "hide-sm" hides on phones.
+function dataTable(heads, rows, onRow) {
+  const cls = heads.map((h) => (Array.isArray(h) ? h[1] : ""));
+  return el("div", { class: "table-wrap" }, el("table", { class: `data${onRow ? " clickable" : ""}` },
+    el("thead", {}, el("tr", {}, heads.map((h, i) => el("th", { class: cls[i] }, Array.isArray(h) ? h[0] : h)))),
+    el("tbody", {}, rows.map((r, ri) => {
+      const tr = el("tr", {}, r.cells.map((c, i) => el("td", { class: cls[i] }, c)));
+      if (onRow) {
+        tr.tabIndex = 0;
+        tr.addEventListener("click", () => onRow(r.data, tr));
+        tr.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onRow(r.data, tr); } });
+        if (r.current) tr.classList.add("current");
+      }
+      tr.style.setProperty("--i", String(Math.min(ri, 10)));
+      return tr;
+    }))));
+}
+
+function section(title, ...kids) { return el("section", { class: "panel" }, el("h2", {}, title), ...kids); }
+
+function select(label, options, value, onChange) {
+  const s = el("select", { "aria-label": label, onchange: () => onChange(s.value) },
+    el("option", { value: "" }, `All ${label.toLowerCase()}${label.endsWith("s") ? "es" : "s"}`),
+    options.map((o) => el("option", { value: o, selected: o === value }, o)));
+  if (value && !options.includes(value)) s.append(el("option", { value, selected: true }, value));
+  return s;
+}
+
+// Identifier in mono with soft line breaks after "_" (text nodes + <wbr>, never parsed markup).
+const ident = (v) => el("span", { class: "mono" }, String(v || "-").split(/(?<=_)/).flatMap((part, i) => (i ? [el("wbr"), part] : [part])));
+const modelChip = (m) => el("span", { class: "chip model mono" }, m || "-");
+const runLink = (id) => el("a", { class: "btn", href: `#/runs/${enc(id)}` }, "Open run →");
+
+// A side panel (reuses the drawer). Opening it never changes the route, so refreshes keep it.
+function sidePanel() {
+  const scrim = el("div", { class: "scrim" });
+  const drawer = el("aside", { class: "drawer obs", "aria-label": "Details", tabindex: "-1" });
+  const p = { scrim, drawer, key: null };
+  p.close = () => {
+    if (!p.key) return;
+    const was = p.key;
+    p.key = null;
+    drawer.classList.remove("open"); scrim.classList.remove("open"); document.body.classList.remove("locked");
+    if (p.onClose) p.onClose(was);
+  };
+  p.open = (key, chipNode, title, body) => {
+    const first = !p.key;
+    p.key = key;
+    fill(drawer, el("div", { class: "drawer-head" }, el("div", {}, chipNode, el("h2", {}, title)),
+      el("button", { class: "btn icon", type: "button", "aria-label": "Close", onclick: p.close }, "×")),
+    el("div", { class: "drawer-body" }, body));
+    drawer.classList.add("open"); scrim.classList.add("open"); document.body.classList.add("locked");
+    if (first) drawer.focus({ preventScroll: true });
+  };
+  scrim.addEventListener("click", p.close);
+  return p;
+}
+
+function kvList(pairs) {
+  return el("dl", { class: "kv big" }, pairs.filter(Boolean).map(([k, v]) => [el("dt", {}, k), el("dd", {}, v === null || v === undefined || v === "" ? "-" : v)]));
+}
+
+// Shared shell for the two log pages: filters + paged table + side panel. State lives in `ui` across refreshes.
+function obsState(kind, filters) {
+  if (ui && ui.kind === kind) return ui;
+  const size = Number(getPref(`dash.pp.${kind}`, "10"));
+  return { kind, sigs: {}, page: 0, size: PAGE_SIZES.includes(size) ? size : 10, f: { ...filters } };
+}
+function logQuery(st) {
+  const q = new URLSearchParams({ limit: String(st.size), offset: String(st.page * st.size) });
+  for (const [k, v] of Object.entries(st.f)) if (v) q.set(k, v);
+  return q.toString();
+}
+function setFilter(k, v) { ui.f[k] = v; ui.page = 0; ui.sigs.log = null; refresh(true); }
+
+function filterBar(fields) {
+  const any = Object.values(ui.f).some(Boolean);
+  return el("div", { class: "filters" }, fields,
+    any ? el("button", { class: "btn ghost", type: "button", onclick: () => {
+      for (const k of Object.keys(ui.f)) ui.f[k] = ""; ui.page = 0; ui.sigs.log = null; refresh(true);
+    } }, "Clear filters") : null);
+}
+
+function runIdField() {
+  const i = el("input", { type: "search", value: ui.f.run_id || "", placeholder: "Run id", "aria-label": "Run id",
+    class: "mono", spellcheck: false });
+  i.addEventListener("change", () => setFilter("run_id", i.value.trim()));
+  return i;
+}
+
+function obsShell(st, intro) {
+  ui = st;
+  ui.top = el("div");
+  ui.logPanel = el("section", { class: "panel log-panel" });
+  ui.pager = pager(st.kind, (d) => {
+    ui.size = ui.pager.size(); ui.page = turn(ui.page, d); ui.sigs.log = null; refresh(true);
+  });
+  ui.side = sidePanel();
+  ui.side.onClose = () => { ui.sigs.log = null; refresh(true); };
+  ui.closePanel = ui.side.close;
+  app.replaceChildren(el("div", { class: "page-head" }, el("p", {}, intro)), ui.top, ui.logPanel, ui.side.scrim, ui.side.drawer);
+}
+
+// ----- Overview -----
+const OVERVIEW = {
+  async load() {
+    const [ov, llm, runs] = await Promise.all([api("/metrics/overview"), api(`/metrics/llm?days=${CHART_DAYS}`), api("/runs")]);
+    return { ov, llm, runs };
+  },
+  render({ ov, llm, runs }, escs) {
+    if (!ui || ui.kind !== "overview") {
+      ui = { kind: "overview", sigs: {} };
+      ui.kpis = el("div", { class: "kpis" });
+      ui.charts = el("div", { class: "grid2" });
+      ui.lower = el("div", { class: "grid2" });
+      app.replaceChildren(el("div", { class: "page-head" }, el("p", {}, "How onboarding is going across every run.")),
+        ui.kpis, ui.charts, ui.lower);
+    }
+    const st = ov.runs_by_status || {};
+    const n = (k) => st[k] || 0;
+    const active = Object.entries(st).filter(([k]) => (STATUS[k] || [0, 0, "active"])[2] === "active").reduce((a, [, v]) => a + v, 0);
+    const c = ov.calls || {};
+    const e2p = ov.email_to_project || {};
+    if (changed("kpis", [ov, escs.length])) {
+      fill(ui.kpis,
+        kpi("Runs", fmtInt(ov.runs_total), `${fmtInt(active)} in progress`),
+        kpi("Completed", fmtInt(n("COMPLETED") + n("HANDED_OFF")), `${fmtInt(n("HANDED_OFF"))} handed off`, "ok"),
+        kpi("Needs a human", fmtInt(ov.escalations_open), ov.escalations_open ? "Open escalations" : "Nothing waiting",
+          ov.escalations_open ? "warn" : ""),
+        kpi("Email to project", fmtDur(e2p.avg_seconds), e2p.runs ? `Average over ${fmtInt(e2p.runs)} runs` : "No project yet"),
+        kpi("LLM cost (est.)", fmtUsd(ov.llm_cost_usd), `${fmtInt(ov.llm_calls)} calls, list prices`),
+        kpi("Calls confirmed / placed", `${fmtInt(c.confirmed)} / ${fmtInt(c.placed)}`,
+          `${fmtInt(c.unclear)} unclear, ${fmtInt(c.no_answer)} unanswered`));
+    }
+    const days = lastDays(CHART_DAYS);
+    const perDay = Object.fromEntries((ov.runs_by_day || []).map((d) => [d.day, d.runs]));
+    const series = llm.series || [];
+    if (changed("charts", [perDay, series.map((d) => d.cost_usd)])) {
+      fill(ui.charts,
+        section(`Runs started, last ${CHART_DAYS} days`, barChart(days.map((d) => ({ label: shortDay(d), value: perDay[d] || 0 })),
+          (v) => fmtInt(v), "Runs started per day", true)),
+        section("LLM cost per day (est.)", sparkChart(series.map((d) => ({ label: shortDay(d.day), value: d.cost_usd })),
+          (v) => fmtUsd(v), "Estimated LLM cost per day")));
+    }
+    const recent = [...runs].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 6);
+    if (changed("lower", [st, recent.map((r) => [r.id, r.status, r.updated_at, r.customer_name])])) {
+      const total = Math.max(1, ...Object.values(st));
+      const statusRows = Object.entries(st).sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+        const [label, tone] = STATUS[k] || [human(k), "idle"];
+        const bar = el("span", { class: `hbar ${tone}` });
+        bar.style.setProperty("--w", String(v / total));
+        return el("li", {}, el("span", { class: "hlabel" }, label), el("span", { class: "htrack" }, bar), el("b", {}, fmtInt(v)));
+      });
+      fill(ui.lower,
+        section("Runs by status", statusRows.length ? el("ul", { class: "hbars" }, statusRows)
+          : el("div", { class: "empty" }, el("strong", {}, "No runs yet"), "Runs appear when a deal email arrives.")),
+        section("Recent activity", recent.length ? el("div", { class: "recent" }, recent.map((r) => {
+          const d = cache.get(r.id);
+          const info = derive(r, d && d.data, escs);
+          return el("a", { class: "recent-row", href: `#/runs/${enc(r.id)}` },
+            el("span", { class: "recent-name" }, info.name), statusChip(r, info),
+            el("span", { class: "time" }, ago(r.updated_at || r.created_at)));
+        })) : el("div", { class: "empty" }, "Nothing yet.")));
+    }
+  },
+};
+
+// ----- AI usage -----
+const AI = {
+  async load() {
+    const st = obsState("ai", { model: "", node: "", run_id: "" });
+    const [m, page] = await Promise.all([api(`/metrics/llm?days=${CHART_DAYS}`), api(`/llm-calls?${logQuery(st)}`)]);
+    return { st, m, page };
+  },
+  render({ st, m, page }) {
+    if (ui !== st) obsShell(st, "Every LLM call across all runs: models, tokens, latency and estimated cost.");
+    const t = m.totals || {};
+    if (changed("top", [t, m.by_model, m.by_node, m.by_prompt, m.latency_buckets, (m.series || []).map((d) => d.calls)])) {
+      const prices = Object.entries(m.prices_usd_per_mtok || {}).map(([k, [i, o]]) => `${k} $${i} in / $${o} out`).join("; ");
+      const groupRow = (g, first) => ({ data: g, cells: [first, el("span", {}, fmtInt(g.calls)), `${fmtInt(g.input_tokens)} / ${fmtInt(g.output_tokens)}`,
+        fmtUsd(g.cost_usd), fmtMs(g.avg_latency_ms), fmtMs(g.p95_latency_ms)] });
+      const gh = ["", ["Calls", "num"], ["Tokens in / out", "num hide-sm"], ["Est. cost", "num"], ["Avg", "num hide-sm"], ["p95", "num"]];
+      fill(ui.top,
+        el("div", { class: "kpis" },
+          kpi("LLM calls", fmtInt(t.calls)),
+          kpi("Tokens in", fmtInt(t.input_tokens)),
+          kpi("Tokens out", fmtInt(t.output_tokens)),
+          kpi("Cost (est.)", fmtUsd(t.cost_usd), "List prices, not billing"),
+          kpi("Latency p50", fmtMs(t.p50_latency_ms)),
+          kpi("Latency p95", fmtMs(t.p95_latency_ms), t.avg_latency_ms !== null && t.avg_latency_ms !== undefined ? `Average ${fmtMs(t.avg_latency_ms)}` : "")),
+        el("div", { class: "grid2" },
+          section(`Calls per day, last ${CHART_DAYS} days`, barChart((m.series || []).map((d) => ({ label: shortDay(d.day), value: d.calls })),
+            (v) => fmtInt(v), "LLM calls per day", true)),
+          section("Latency distribution", barChart((m.latency_bucket_labels || []).map((l, i) => ({ label: l, value: (m.latency_buckets || [])[i] || 0 })),
+            (v) => `${fmtInt(v)} calls`, "LLM calls by latency"))),
+        section("By model", (m.by_model || []).length ? dataTable([["Model"], ...gh.slice(1)],
+          m.by_model.map((g) => groupRow(g, modelChip(g.model)))) : el("p", { class: "small muted" }, "No LLM calls yet."),
+        el("p", { class: "small muted note" }, `Cost is estimated from list prices per million tokens (${prices || "none set"}). Unknown models count as $0.`)),
+        el("div", { class: "grid2" },
+          section("By step", (m.by_node || []).length ? dataTable([["Agent / step"], ["Calls", "num"], ["Est. cost", "num"], ["p95", "num"]],
+            m.by_node.map((g) => ({ cells: [ident(`${g.agent || "-"} / ${g.node || "-"}`), fmtInt(g.calls), fmtUsd(g.cost_usd), fmtMs(g.p95_latency_ms)] })))
+            : el("p", { class: "small muted" }, "No LLM calls yet.")),
+          section("By prompt version", (m.by_prompt || []).length ? dataTable([["Prompt"], ["Calls", "num"], ["Est. cost", "num"], ["p95", "num"]],
+            m.by_prompt.map((g) => ({ cells: [ident(g.prompt_version), fmtInt(g.calls), fmtUsd(g.cost_usd), fmtMs(g.p95_latency_ms)] })))
+            : el("p", { class: "small muted" }, "No LLM calls yet."))));
+    }
+    const models = (m.by_model || []).map((g) => g.model).filter(Boolean);
+    const nodes = [...new Set((m.by_node || []).map((g) => g.node).filter(Boolean))].sort();
+    ui.page = ui.pager.update(page.total, ui.page);
+    if (changed("log", [page.total, page.rows.map((r) => r.id), ui.f, models, nodes, ui.side.key])) {
+      const open = (r) => {
+        ui.side.open(`llm:${r.id}`, modelChip(r.model), `${r.agent || "-"} / ${r.node || "-"}`, [
+          kvList([["Time", fmtTime(r.ts, true)], ["Customer", r.customer_name], ["Run", r.run_id ? el("span", { class: "mono" }, r.run_id) : ""],
+            ["Agent", r.agent], ["Step", el("span", { class: "mono" }, r.node || "")], ["Model", el("span", { class: "mono" }, r.model || "")],
+            ["Prompt", el("span", { class: "mono" }, r.prompt_version || "")], ["Tokens in", fmtInt(r.input_tokens)],
+            ["Tokens out", fmtInt(r.output_tokens)], ["Latency", fmtMs(r.latency_ms)], ["Cost (est.)", fmtUsd(r.cost_usd, 6)],
+            ["Stop reason", r.stop_reason]]),
+          el("p", { class: "small muted" }, "Prompts and responses are not stored; this is the call's metadata."),
+          r.run_id ? runLink(r.run_id) : null]);
+        ui.sigs.log = null; refresh(true);
+      };
+      fill(ui.logPanel, el("div", { class: "panel-head" }, el("h2", {}, `Call log (${fmtInt(page.total)})`)),
+        filterBar([select("Model", models, ui.f.model, (v) => setFilter("model", v)),
+          select("Step", nodes, ui.f.node, (v) => setFilter("node", v)), runIdField()]),
+        page.rows.length ? dataTable([["Time", "nowrap"], ["Customer", "hide-sm"], ["Step"], ["Model", "hide-sm"], ["Tokens in / out", "num hide-sm"],
+          ["Latency", "num"], ["Est. cost", "num hide-sm"], ["Stop", "hide-sm"]],
+        page.rows.map((r) => ({ data: r, current: ui.side.key === `llm:${r.id}`, cells: [fmtTime(r.ts, true), r.customer_name || "-",
+          ident(r.node), modelChip(r.model), `${fmtInt(r.input_tokens)} / ${fmtInt(r.output_tokens)}`,
+          fmtMs(r.latency_ms), fmtUsd(r.cost_usd), r.stop_reason || "-"] })), open)
+          : el("div", { class: "empty" }, el("strong", {}, "No LLM calls match"), Object.values(ui.f).some(Boolean) ? "Try clearing the filters." : "Calls appear as runs are processed."),
+        ui.pager.root);
+    }
+  },
+};
+
+// ----- Tool calls -----
+const TOOLS = {
+  async load() {
+    const st = obsState("tools", { tool: "", agent: "", status: "", run_id: "" });
+    const [m, page] = await Promise.all([api("/metrics/tools"), api(`/tool-calls?${logQuery(st)}`)]);
+    return { st, m, page };
+  },
+  render({ st, m, page }) {
+    if (ui !== st) obsShell(st, "Every external action the agents took, through the tool registry. Inputs and outputs load on demand.");
+    const tools = m.tools || [];
+    if (changed("top", tools)) {
+      const calls = tools.reduce((a, t) => a + t.calls, 0);
+      const failed = tools.reduce((a, t) => a + t.failed, 0);
+      fill(ui.top,
+        el("div", { class: "kpis" },
+          kpi("Tool calls", fmtInt(calls)),
+          kpi("Failed", fmtInt(failed), calls ? `${((100 * failed) / calls).toFixed(1)}% of calls` : "", failed ? "warn" : ""),
+          kpi("Replayed", fmtInt(tools.reduce((a, t) => a + t.replayed, 0)), "Idempotent repeats, not re-sent"),
+          kpi("Blocked", fmtInt(tools.reduce((a, t) => a + t.blocked, 0)), "Not on the agent's allowlist")),
+        section("Health by tool", tools.length ? dataTable([["Tool"], ["Calls", "num"], ["Failed", "num hide-sm"], ["Failure rate", "num"],
+          ["Replayed", "num hide-sm"], ["Blocked", "num hide-sm"], ["Avg", "num hide-sm"], ["p95", "num"]],
+        tools.map((t) => ({ data: t, cells: [ident(t.tool), fmtInt(t.calls), fmtInt(t.failed),
+          chip(`${(t.failure_rate * 100).toFixed(1)}%`, t.failed ? "bad" : "ok"), fmtInt(t.replayed), fmtInt(t.blocked),
+          fmtMs(t.avg_latency_ms), fmtMs(t.p95_latency_ms)] })), (t) => setFilter("tool", t.tool))
+          : el("p", { class: "small muted" }, "No tool calls yet.")));
+    }
+    const names = tools.map((t) => t.tool).sort();
+    ui.page = ui.pager.update(page.total, ui.page);
+    if (changed("log", [page.total, page.rows.map((r) => [r.id, r.status]), ui.f, names, ui.side.key])) {
+      const open = async (r) => {
+        const key = `tool:${r.id}`;
+        const head = (body) => ui.side.open(key, chip(r.status || "", r.status === "ok" ? "ok" : "bad"), r.tool || "Tool call", body);
+        const meta = kvList([["Time", fmtTime(r.ts, true)], ["Customer", r.customer_name], ["Run", r.run_id ? el("span", { class: "mono" }, r.run_id) : ""],
+          ["Agent", r.agent], ["Attempt", r.attempt !== null && r.attempt !== undefined ? String(r.attempt) : ""],
+          ["Duration", fmtMs(r.latency_ms)], ["Idempotency key", r.idempotency_key ? el("span", { class: "mono" }, r.idempotency_key) : ""]]);
+        head([meta, el("div", { class: "working" }, "Loading input and output…")]);
+        ui.sigs.log = null; refresh(true);
+        let body;
+        try {
+          const d = await api(`/tool-calls/${enc(r.id)}`);
+          body = [el("div", { class: "label" }, "Input"), json(d.args ?? null), el("div", { class: "label" }, "Output"), json(d.result ?? null),
+            el("p", { class: "small muted" }, "Phone numbers are masked to the last 4 digits; secrets are redacted.")];
+        } catch (e) { body = [errorBox(e)]; }
+        if (ui && ui.side && ui.side.key === key) head([meta, body, r.run_id ? runLink(r.run_id) : null]);
+      };
+      fill(ui.logPanel, el("div", { class: "panel-head" }, el("h2", {}, `Call log (${fmtInt(page.total)})`)),
+        filterBar([select("Tool", names, ui.f.tool, (v) => setFilter("tool", v)), select("Agent", AGENTS, ui.f.agent, (v) => setFilter("agent", v)),
+          select("Status", ["ok", "failed"], ui.f.status, (v) => setFilter("status", v)), runIdField()]),
+        page.rows.length ? dataTable([["Time", "nowrap"], ["Customer", "hide-sm"], ["Agent", "hide-sm"], ["Tool"], ["Status"], ["Try", "num hide-sm"],
+          ["Duration", "num"], ["Idempotency key", "hide-sm"]],
+        page.rows.map((r) => ({ data: r, current: ui.side.key === `tool:${r.id}`, cells: [fmtTime(r.ts, true), r.customer_name || "-", r.agent || "-",
+          ident(r.tool), chip(r.status || "", r.status === "ok" ? "ok" : "bad"),
+          r.attempt !== null && r.attempt !== undefined ? String(r.attempt) : "-", fmtMs(r.latency_ms),
+          el("span", { class: "mono key", title: r.idempotency_key || "" }, r.idempotency_key || "-")] })), open)
+          : el("div", { class: "empty" }, el("strong", {}, "No tool calls match"), Object.values(ui.f).some(Boolean) ? "Try clearing the filters." : "Calls appear as runs are processed."),
+        ui.pager.root);
+    }
+  },
+};
+
+const OBS = { overview: OVERVIEW, ai: AI, tools: TOOLS };
+
 // ---------- user menu ----------
 function setupUserMenu() {
   const btn = document.getElementById("user-btn");
@@ -1130,6 +1521,7 @@ document.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLElement && e.target.closest("input, textarea, select")) return;
   if (view.name === "run") goBack();
   else if (view.name === "escalations" && view.id) closeDrawer();
+  else if (ui && ui.closePanel) ui.closePanel();
 });
 setInterval(() => refresh(false), REFRESH_MS);
 api("/ui/config").then((c) => { config = c || config; }).catch(() => { /* links fall back to plain ids */ })
