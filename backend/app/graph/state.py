@@ -1,0 +1,65 @@
+import re
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any, TypedDict
+
+from app.config import Settings, Tier, TierRule, tier_rules
+from app.llm.client import LLM
+from app.services.audit import audit
+from app.services.store import Store
+from app.tools.registry import ToolRegistry
+
+
+class OnboardingState(TypedDict, total=False):
+    run_id: str
+    email: dict                 # InboundEmail.model_dump()
+    extracted: dict             # DealFields.model_dump()
+    issues: list[str]
+    ae: dict                    # AeLookupOut of the AE to call
+    call_attempts: int
+    provider_call_id: str
+    call_result: dict           # CallResult.model_dump()
+    last_call_rationale: str
+    plan_tier: str
+    tier_source: str            # "ae_call" | "human:<who>"
+    project_id: str
+    welcome_message: str
+    channel_id: str
+    status: str
+    escalation_reason: str
+    escalated_by: str           # agent whose work resumes after a human "retry"
+    escalation_count: int
+    resolution: dict
+
+
+@dataclass
+class Deps:
+    settings: Settings
+    store: Store
+    registry: ToolRegistry
+    llm: LLM
+    today: Callable[[], date] = date.today
+    sleep: Callable[[float], None] = time.sleep
+    rules: dict[Tier, TierRule] = field(init=False)
+
+    def __post_init__(self):
+        self.rules = tier_rules(self.settings)
+
+    def set_status(self, state: OnboardingState, status: str, **run_fields: Any) -> dict:
+        self.store.upsert_run(state["run_id"], status=status, **run_fields)
+        return {"status": status}
+
+    def audit(self, state: OnboardingState, agent: str, step: str, rationale: str, *,
+              input: Any = None, output: Any = None, status: str = "ok") -> None:
+        audit(self.store, state["run_id"], agent, step, input=input, output=output,
+              rationale=rationale, status=status)
+
+    def escalate(self, state: OnboardingState, agent: str, reason: str) -> dict:
+        self.audit(state, agent, "escalate_request", reason, status="escalated")
+        return {"escalation_reason": reason, "escalated_by": agent}
+
+
+def customer_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.casefold())
