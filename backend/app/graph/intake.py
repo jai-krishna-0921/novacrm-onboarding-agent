@@ -5,7 +5,7 @@ import re
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from app.config import Tier
+from app.config import PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER, PLACEHOLDER_PM, Tier, role_placeholders
 from app.graph.state import Deps, OnboardingState
 from app.guardrails.decision import CallOutcome, CallResult, decide_tier
 from app.guardrails.input import validate_deal
@@ -185,16 +185,19 @@ def build_intake(d: Deps):
             customer_name=x["customer_name"], owner_email=d.settings.rocketlane_owner_email,
             start_date=start, template_id=rule.template_id,
             member_emails=[e for e in (d.settings.rocketlane_pm_email, rule.csm_email) if e],
-            customer_contact_email=x["customer_email"], external_reference_id=_ext_ref(s))
+            customer_contact_email=x["customer_email"], external_reference_id=_ext_ref(s),
+            placeholders=role_placeholders(d.settings.rocketlane_pm_email, rule.csm_email, x["customer_email"]))
         try:
             out = d.registry.call(AGENT, "rocketlane_create_project", args, run_id=s["run_id"],
                                   idempotency_key=f"project:{s['run_id']}",
                                   rationale=f"tier {rule.tier} ({s['tier_source']}) -> template "
                                             f"{rule.template_id}, {rule.duration_days} days, {rule.csm_model} CSM")
         except ToolFailed as e:
-            return d.escalate(s, AGENT, f"Rocketlane API unavailable, project not created: {e.reason}", "system")
-        d.audit(s, AGENT, "create_project", f"created from {rule.label} template",
-                output={"project_id": out.project_id})
+            return d.escalate(s, AGENT, f"Rocketlane project not created: {e.reason}", "system")
+        unfilled = sorted({PLACEHOLDER_PM, PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER} - set(args["placeholders"]))
+        d.audit(s, AGENT, "create_project", f"created from {rule.label} template"
+                + (f"; WARNING unfilled placeholders {unfilled} (overdue alerts/tasks have no owner)" if unfilled else ""),
+                output={"project_id": out.project_id, "unfilled_placeholders": unfilled})
         return {"project_id": out.project_id,
                 **d.set_status(s, "PROJECT_CREATED", rocketlane_project_id=out.project_id)}
 

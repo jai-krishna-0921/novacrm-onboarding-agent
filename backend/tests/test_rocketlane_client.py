@@ -100,3 +100,54 @@ def test_template_check_reports_missing_and_non_project_templates(rl):
     problems = rl.check_templates({"enterprise": "11", "growth": "12", "other": "99"})
     assert problems == ["growth: template 12 is a DOCUMENT template, not PROJECT",
                         "other: template 99 not found"]
+
+
+# ---- placeholder -> user mapping (GET /placeholders verified live on 2026-11-11) ----
+
+PLACEHOLDERS = [{"placeholderId": 5000000094570, "placeholderName": "Customer", "placeholderType": "EXTERNAL"},
+                {"placeholderId": 5000000094572, "placeholderName": "Customer success", "placeholderType": "NATIVE"},
+                {"placeholderId": 5000000094574, "placeholderName": "Project Manager", "placeholderType": "NATIVE"}]
+WITH_PH = {**PAYLOAD, "placeholders": [{"placeholderName": "Project Manager", "user": {"emailId": "pm@x.example"}},
+                                       {"placeholderName": "customer SUCCESS", "user": {"emailId": "csm@x.example"}}]}
+
+
+@respx.mock
+def test_create_resolves_placeholder_names_to_ids(rl):
+    respx.get(f"{BASE}/placeholders").mock(return_value=httpx.Response(200, json=page(PLACEHOLDERS)))
+    route = respx.post(f"{BASE}/projects").mock(return_value=httpx.Response(201, json={"projectId": 7}))
+    assert rl.create_project(WITH_PH) == "7"
+    body = httpx.Response(200, content=route.calls.last.request.content).json()
+    assert body["placeholders"] == [{"placeholderId": 5000000094574, "user": {"emailId": "pm@x.example"}},
+                                    {"placeholderId": 5000000094572, "user": {"emailId": "csm@x.example"}}]
+
+
+@respx.mock
+def test_unknown_placeholder_blocks_create_without_posting(rl):
+    respx.get(f"{BASE}/placeholders").mock(return_value=httpx.Response(200, json=page(PLACEHOLDERS[:1])))
+    route = respx.post(f"{BASE}/projects").mock(return_value=httpx.Response(201, json={"projectId": 7}))
+    with pytest.raises(PermanentToolError, match="Project Manager"):
+        rl.create_project(WITH_PH)
+    assert not route.called
+
+
+@respx.mock
+def test_placeholders_fetched_once_per_client(rl):
+    ph = respx.get(f"{BASE}/placeholders").mock(return_value=httpx.Response(200, json=page(PLACEHOLDERS)))
+    respx.post(f"{BASE}/projects").mock(return_value=httpx.Response(201, json={"projectId": 7}))
+    rl.create_project(WITH_PH)
+    rl.create_project(WITH_PH)
+    assert ph.call_count == 1
+
+
+@respx.mock
+def test_create_without_placeholders_skips_lookup(rl):
+    ph = respx.get(f"{BASE}/placeholders").mock(return_value=httpx.Response(200, json=page(PLACEHOLDERS)))
+    respx.post(f"{BASE}/projects").mock(return_value=httpx.Response(201, json={"projectId": 7}))
+    rl.create_project(PAYLOAD)
+    assert not ph.called
+
+
+@respx.mock
+def test_check_placeholders_reports_missing(rl):
+    respx.get(f"{BASE}/placeholders").mock(return_value=httpx.Response(200, json=page(PLACEHOLDERS[:2])))
+    assert rl.check_placeholders(["Customer", "Project Manager"]) == ["placeholder 'Project Manager' not found"]

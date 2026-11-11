@@ -71,3 +71,13 @@ def tier_rules(s: Settings) -> dict[Tier, TierRule]:
         Tier.GROWTH: TierRule(Tier.GROWTH, "Growth", s.rocketlane_template_growth,
                               14, "pooled", s.rocketlane_csm_growth),
     }
+
+
+# Template tasks are assigned to these Rocketlane role placeholders (docs/ROCKETLANE_SETUP.md). The 1-day overdue
+# automation notifies "Project Manager", so it must be filled on every project.
+PLACEHOLDER_PM, PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER = "Project Manager", "Customer success", "Customer"
+
+
+def role_placeholders(pm_email: str, csm_email: str, customer_email: str) -> dict[str, str]:
+    m = {PLACEHOLDER_PM: pm_email, PLACEHOLDER_CSM: csm_email, PLACEHOLDER_CUSTOMER: customer_email}
+    return {k: v for k, v in m.items() if v}

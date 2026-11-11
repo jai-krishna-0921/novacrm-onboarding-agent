@@ -86,6 +86,7 @@ class RlCreateIn(BaseModel):
     member_emails: list[str]
     customer_contact_email: str
     external_reference_id: str
+    placeholders: dict[str, str] = {}  # template role placeholder name -> user email
 
 
 class RlCreateOut(BaseModel):
@@ -142,6 +143,8 @@ def rocketlane_project_payload(a: RlCreateIn) -> dict:
         "teamMembers": {"members": [{"emailId": e} for e in a.member_emails],
                         "customers": [{"emailId": a.customer_contact_email}]},
         "externalReferenceId": a.external_reference_id,
+        **({"placeholders": [{"placeholderName": n, "user": {"emailId": e}} for n, e in a.placeholders.items()]}
+           if a.placeholders else {}),
     }
 
 
@@ -189,7 +192,12 @@ def build_registry(store: Store, p: Providers, **kw) -> ToolRegistry:
         except AmbiguousToolError as e:
             # The create may have been accepted. Look once; if search hasn't indexed it yet, a blind
             # re-POST could duplicate the project, so stop and let a human verify.
-            if existing := p.rocketlane.find_project(a.customer_name, a.external_reference_id):
+            try:
+                existing = p.rocketlane.find_project(a.customer_name, a.external_reference_id)
+            except Exception as find_err:  # any lookup failure: a registry retry would re-POST, so stop here
+                raise PermanentToolError(f"create outcome unknown ({e}) and lookup failed ({find_err}); "
+                                         "verify in Rocketlane") from find_err
+            if existing:
                 return RlCreateOut(project_id=existing)
             raise PermanentToolError(f"create outcome unknown after timeout ({e}); verify in Rocketlane") from e
 

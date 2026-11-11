@@ -2,7 +2,7 @@
 
 import sys
 
-from app.config import Settings, tier_rules
+from app.config import PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER, PLACEHOLDER_PM, Settings, tier_rules
 
 s = Settings()
 results: list[tuple[str, bool, str]] = []
@@ -38,6 +38,7 @@ def rocketlane():
     rl = RocketlaneClient(s.rocketlane_base_url, s.rocketlane_api_key)
     rules = tier_rules(s)
     problems = rl.check_templates({t.value: r.template_id for t, r in rules.items()})
+    problems += rl.check_placeholders([PLACEHOLDER_PM, PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER])
     users = {u["email"].lower(): u for u in rl._get_all("/users")}
     for label in ("rocketlane_owner_email", "rocketlane_pm_email", "rocketlane_csm_enterprise", "rocketlane_csm_growth"):
         email = getattr(s, label).lower()
@@ -45,7 +46,7 @@ def rocketlane():
             problems.append(f"{label.upper()} {email} is not a Rocketlane user")
     if problems:
         raise RuntimeError("; ".join(problems))
-    return "templates are PROJECT templates; owner/PM/CSMs exist"
+    return "templates are PROJECT templates; owner/PM/CSMs and role placeholders exist"
 
 
 def anthropic():

@@ -15,6 +15,7 @@ class RocketlaneClient:
         self.http = httpx.Client(base_url=base_url, timeout=timeout,
                                  headers={"api-key": api_key, "accept": "application/json"})
         self.sleep = sleep
+        self._placeholder_ids: dict[str, int] | None = None
 
     # ---- low level ----
     def _request(self, method: str, path: str, *, write: bool = False, **kw) -> dict:
@@ -49,8 +50,21 @@ class RocketlaneClient:
             token = pg["nextPageToken"]
 
     # ---- provider interface ----
+    def _placeholder_id(self, name: str) -> int:
+        if self._placeholder_ids is None:
+            self._placeholder_ids = {p["placeholderName"].strip().lower(): int(p["placeholderId"])
+                                     for p in self._get_all("/placeholders")}
+        try:
+            return self._placeholder_ids[name.strip().lower()]
+        except KeyError:
+            raise PermanentToolError(f"placeholder {name!r} not found in Rocketlane") from None
+
     def create_project(self, payload: dict) -> str:
         body = {**payload, "sources": [{**s, "templateId": int(s["templateId"])} for s in payload.get("sources", [])]}
+        if payload.get("placeholders"):
+            # The API wants IDs; config speaks names. Resolve before the POST so a bad name never half-creates.
+            body["placeholders"] = [{"placeholderId": self._placeholder_id(p["placeholderName"]), "user": p["user"]}
+                                    for p in payload["placeholders"]]
         out = self._request("POST", "/projects", json=body, write=True)
         return str(out["projectId"])
 
@@ -76,6 +90,16 @@ class RocketlaneClient:
                 problems.append(f"{label}: template {tid} not found")
             elif t.get("objectType") != "PROJECT":
                 problems.append(f"{label}: template {tid} is a {t.get('objectType')} template, not PROJECT")
+        return problems
+
+    def check_placeholders(self, names: list[str]) -> list[str]:
+        """Preflight: every placeholder the code fills must exist (GET /placeholders, verified 2026-11-11)."""
+        problems = []
+        for n in names:
+            try:
+                self._placeholder_id(n)
+            except PermanentToolError:
+                problems.append(f"placeholder {n!r} not found")
         return problems
 
 

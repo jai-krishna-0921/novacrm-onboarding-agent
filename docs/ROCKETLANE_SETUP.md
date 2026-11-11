@@ -117,6 +117,25 @@ Both templates:
 - Tasks are assigned to **role placeholders**: Customer success = the tier's CSM; Project Manager = internal handoff review, Migration verified, Go-live sign-off; Customer = data export.
 - *Go-live checklist sign-off* **depends on** *Migration verified (validation checks passed)*.
 
-Remaining:
-1. Overdue automations (1 day → PM, 4 days → Owner).
-2. Placeholder → user mapping at project creation (code).
+Overdue automations (Settings → Automations, account-wide, active, created 2026-11-11):
+
+| Rule | Trigger | Condition | Notify |
+|---|---|---|---|
+| Overdue 1 day → notify Project Manager | Task becomes overdue (All tasks) | overdue by 1 day | **Project Manager** placeholder |
+| Overdue 4 days → escalate to Project Owner | Task becomes overdue (All tasks) | overdue by 4 days | **Project owner** placeholder |
+
+How to find them: the per-phase automation editor inside a template only offers *phase* triggers. The task-overdue
+trigger is only in **Settings → Automations → New automation → "When task becomes overdue"**, and the day threshold
+sits under **Add conditions** ("When task becomes overdue by N days"; the actions in that block run once per task).
+
+Placeholder → user mapping (code, done): `POST /projects` sends `placeholders`. Agent 1 fills **Project Manager** with
+`ROCKETLANE_PM_EMAIL`, **Customer success** with the tier's CSM, and **Customer** with the deal's customer contact. Names
+are resolved to IDs through `GET /placeholders` (verified live on 2026-11-11: Customer `5000000094570`, Customer success
+`5000000094572`, Project Manager `5000000094574`), and preflight checks that all three exist. Still UNVERIFIED: the
+`user` shape `{emailId}` in a live create. Confirm it on the first real project.
+
+Project Manager vs Project Owner:
+- **Project Owner** (`ROCKETLANE_OWNER_EMAIL`) is a built-in field on every project: the single accountable person, who
+  receives the project invite and any unassigned tasks. In our flow that's the CS lead, and the 4-day escalation goes there.
+- **Project Manager** is a role placeholder from the template: the person running the day-to-day plan (the internal
+  handoff, Migration verified, Go-live sign-off), filled per project by the code. The 1-day nudge goes there.

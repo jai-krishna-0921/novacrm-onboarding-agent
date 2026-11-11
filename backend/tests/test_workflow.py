@@ -300,3 +300,27 @@ def test_retry_delay_is_a_durable_wait_not_a_sleep(settings):
     assert pending["type"] == "wait" and pending["until"] > pending["since"]
     h.resume_wait(rid)
     assert h.status(rid) == "COMPLETED" and len(h.world.voice.calls) == 2
+
+
+# ---------------- Rocketlane role placeholders ----------------
+
+@pytest.mark.parametrize("call,csm", [(ENTERPRISE_CALL, "csm-dedicated@novacrm.example"),
+                                      (GROWTH_CALL, "csm-pool@novacrm.example")])
+def test_project_fills_role_placeholders_with_tier_people(settings, call, csm):
+    """The 1-day overdue automation notifies the 'Project Manager' placeholder; template tasks are assigned to
+    'Customer success' / 'Customer'. Unfilled placeholders mean alerts reach no one and tasks have no owner."""
+    h, rid = run(settings, calls=[call])
+    assert h.status(rid) == "COMPLETED"
+    ph = {p["placeholderName"]: p["user"]["emailId"] for p in h.world.rocketlane.projects[0]["placeholders"]}
+    assert ph == {"Project Manager": "pm@novacrm.example", "Customer success": csm,
+                  "Customer": GOOD["customer_email"]}
+
+
+def test_missing_pm_email_is_flagged_in_audit(settings):
+    """With no PM configured the project still gets created, but the 1-day overdue alert has no recipient:
+    that must be visible in the audit trail, not silent."""
+    h, rid = run(settings.model_copy(update={"rocketlane_pm_email": ""}), calls=[ENTERPRISE_CALL])
+    assert h.status(rid) == "COMPLETED"
+    row = next(r for r in h.store.audit_rows if r["run_id"] == rid and r["step"] == "create_project")
+    assert "Project Manager" in str(row)
+    assert "Project Manager" not in {p["placeholderName"] for p in h.world.rocketlane.projects[0]["placeholders"]}
