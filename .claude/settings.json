@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./backend/.env)",
+      "Bash(cat .env*)",
+      "Bash(git add .env)",
+      "Bash(git add -f .env)"
+    ],
+    "allow": [
+      "Read(./.env.example)"
+    ]
+  }
+}

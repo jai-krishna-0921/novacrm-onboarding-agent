@@ -1,0 +1,3 @@
+CREATE DATABASE app;
+CREATE DATABASE mig_source;
+CREATE DATABASE mig_dest;

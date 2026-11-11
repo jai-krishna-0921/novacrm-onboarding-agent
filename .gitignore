@@ -1,0 +1,31 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+credentials*.json
+token*.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# node
+node_modules/
+web/dist/
+
+# local artifacts
+backend/evals/results/
+*.log
+.DS_Store
+
+# machine-local MCP config (not part of this project)
+.mcp.json
+.claude/settings.local.json
