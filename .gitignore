@@ -29,3 +29,6 @@ backend/evals/results/
 # machine-local MCP config (not part of this project)
 .mcp.json
 .claude/settings.local.json
+
+# browser automation artifacts
+.playwright-mcp/
