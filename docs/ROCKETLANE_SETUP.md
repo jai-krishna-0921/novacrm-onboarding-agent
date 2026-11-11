@@ -39,10 +39,10 @@ person. The existing roles are enough; **no new roles are needed**. Only 2 invit
 
 | Role | Who | Rocketlane role | .env variable |
 |---|---|---|---|
-| Project Owner (4-day alert) | you, `jaikrishna0921@gmail.com` (exists) | n/a | `ROCKETLANE_OWNER_EMAIL` |
-| Project Manager (1-day alert) | **invite** `jaikrishna0921+pm@gmail.com` | Project Manager | `ROCKETLANE_PM_EMAIL` |
-| Dedicated CSM (Enterprise) | **invite** `jaikrishna0921+csm@gmail.com` | Customer success | `ROCKETLANE_CSM_ENTERPRISE` |
-| Pooled CSM (Growth) | Rachel, `sampleuser1@rocketlane.com` (exists) | Customer success | `ROCKETLANE_CSM_GROWTH` |
+| Project Owner (4-day alert) | you, `you@gmail.com` (exists) | n/a | `ROCKETLANE_OWNER_EMAIL` |
+| Project Manager (1-day alert) | **invite** `you+pm@gmail.com` | Project Manager | `ROCKETLANE_PM_EMAIL` |
+| Dedicated CSM (Enterprise) | **invite** `you+csm@gmail.com` | Customer success | `ROCKETLANE_CSM_ENTERPRISE` |
+| Pooled CSM (Growth) | Rachel (sample user) (exists) | Customer success | `ROCKETLANE_CSM_GROWTH` |
 
 Accept both invites from your Gmail (plus-aliases deliver to your inbox) so the users become ACTIVE.
 
