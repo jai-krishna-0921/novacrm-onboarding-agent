@@ -26,22 +26,28 @@ Rocketlane is a customer-onboarding / professional-services platform. Think "Asa
 
 - Users: you (Jai, ACTIVE); sample team members Rachel and Paul (fake @rocketlane.com emails); 2 sample customer contacts.
 - Projects: `[Sample] Acme 2 week onboarding`, `[Sample] Modert 5 week onboarding`.
-- Project templates: only `Simple Onboarding`.
+- Project templates: only `Simple Onboarding` (trial seed data, created with the account). No Enterprise/Growth templates exist, and the API cannot create templates, so build them in the UI (tip: duplicate Simple Onboarding and restructure it).
+- Roles (via `GET /roles`): Customer, Product Manager, Customer success, Engineer, Project Manager, Implementation Manager.
 - Re-check any time with `cd backend && uv run python -m scripts.rl_inspect` (GET-only).
 - Note: the sample customer **"Acme"** normalizes to the same key as "Acme Corp". Use a different demo customer (e.g. "Globex Corporation"), or delete the sample projects, so the duplicate guard doesn't fire.
 
-## Step 1: Users (Settings → Users → Invite)
+## Step 1: Users (Settings → Team members → Invite members)
 
-The API cannot create users. Use Gmail plus-aliases so every invite and notification lands in your own inbox (you can show them in the video):
+Templates hold the plan (phases, tasks, role placeholders); users are the real people. The API needs a real Project
+Owner, the overdue automation notifies real people, and the tier difference (dedicated vs pooled CSM) is a choice of
+person. The existing roles are enough; **no new roles are needed**. Only 2 invites are needed:
 
-| Role | Suggested email | .env variable |
-|---|---|---|
-| Project Owner | you (`jaikrishna0921@gmail.com`) | `ROCKETLANE_OWNER_EMAIL` |
-| Project Manager | `jaikrishna0921+pm@gmail.com` | `ROCKETLANE_PM_EMAIL` |
-| Dedicated CSM (Enterprise) | `jaikrishna0921+csm.dedicated@gmail.com` | `ROCKETLANE_CSM_ENTERPRISE` |
-| Pooled CSM (Growth) | `jaikrishna0921+csm.pool@gmail.com` | `ROCKETLANE_CSM_GROWTH` |
+| Role | Who | Rocketlane role | .env variable |
+|---|---|---|---|
+| Project Owner (4-day alert) | you, `jaikrishna0921@gmail.com` (exists) | n/a | `ROCKETLANE_OWNER_EMAIL` |
+| Project Manager (1-day alert) | **invite** `jaikrishna0921+pm@gmail.com` | Project Manager | `ROCKETLANE_PM_EMAIL` |
+| Dedicated CSM (Enterprise) | **invite** `jaikrishna0921+csm@gmail.com` | Customer success | `ROCKETLANE_CSM_ENTERPRISE` |
+| Pooled CSM (Growth) | Rachel, `sampleuser1@rocketlane.com` (exists) | Customer success | `ROCKETLANE_CSM_GROWTH` |
 
-Accept each invite from Gmail so the user becomes ACTIVE. If the trial caps seats, reuse Rachel or Paul as CSMs, but then you can't show their notifications.
+Accept both invites from your Gmail (plus-aliases deliver to your inbox) so the users become ACTIVE.
+
+In the templates, assign tasks to the **role placeholders** (Customer success, Project Manager), not to named people.
+The code picks the actual person per tier when it creates the project.
 
 ## Step 2: Templates (Templates → New project template)
 
