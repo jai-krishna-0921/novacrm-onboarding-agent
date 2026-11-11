@@ -2,8 +2,22 @@
 
 from typing import Any
 
-from sqlalchemy import (JSON, BigInteger, Boolean, Column, Integer, MetaData, Numeric, Sequence, String, Table,
-                        Text, create_engine, insert, select)
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    Integer,
+    MetaData,
+    Numeric,
+    Sequence,
+    String,
+    Table,
+    Text,
+    create_engine,
+    insert,
+    select,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
