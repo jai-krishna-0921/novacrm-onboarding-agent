@@ -3,7 +3,11 @@ import unicodedata
 
 from app.config import Tier, TierRule
 
-PRICE_RE = re.compile(r"[$₹€£]\s?\d|\b(USD|INR|EUR|GBP)\b|\bper (month|year)\b", re.I)
+PRICE_RE = re.compile(r"[$₹€£]\s?\d|\b(USD|INR|EUR|GBP|Rs)\b\.?|\bper (month|year)\b", re.I)
+_MONTH = (r"(january|february|march|april|may|june|july|august|september|october|november|december"
+          r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b\.?")
+DATE_RE = re.compile(rf"\b\d{{1,2}}(st|nd|rd|th)?\s+{_MONTH}\b|\b{_MONTH}\s+\d{{1,2}}\b|\b\d{{4}}-\d{{2}}-\d{{2}}\b"
+                     r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 DURATION_RE = re.compile(r"\b(\d{1,3})[- ]day", re.I)
 
 
@@ -20,6 +24,8 @@ def check_welcome(text: str, customer_name: str, rule: TierRule) -> list[str]:
         problems.append(f"CSM model must be '{rule.csm_model}' only")
     if PRICE_RE.search(text):
         problems.append("mentions a price")
+    if DATE_RE.search(text):
+        problems.append("mentions a specific date or day (not in state)")
     return problems
 
 

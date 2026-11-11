@@ -20,6 +20,10 @@ class TransientToolError(Exception):
     """5xx, timeouts, rate limits: safe to retry."""
 
 
+class AmbiguousToolError(TransientToolError):
+    """Timed out after the request was sent: the write may or may not have happened."""
+
+
 class PermanentToolError(Exception):
     """4xx and business errors: retrying will not help."""
 

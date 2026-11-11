@@ -47,7 +47,7 @@ def test_happy_path_enterprise_end_to_end(settings):
     [project] = h.world.rocketlane.projects
     assert project["sources"] == [{"templateId": "tmpl-ent", "startDate": project["startDate"]}]
     assert project["customer"] == {"companyName": "Acme Corp"}
-    assert project["externalReferenceId"] == "006Hs00001AbCdEIAV"
+    assert project["externalReferenceId"] == "006Hs00001AbCdE"  # 15-char normalized SF id
     assert {"emailId": "csm-dedicated@novacrm.example"} in project["teamMembers"]["members"]
     assert project["projectName"] == "Acme Corp Onboarding (Enterprise, 30-day)"
 

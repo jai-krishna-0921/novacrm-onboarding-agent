@@ -39,7 +39,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
-line-length = 120
+line-length = 125
 target-version = "py312"
 
 [tool.ruff.lint]

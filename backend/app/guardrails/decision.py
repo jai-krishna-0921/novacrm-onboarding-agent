@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from app.config import Tier
 
@@ -20,7 +20,7 @@ class CallResult(BaseModel):
     provider_call_id: str
     status: str  # connected | no_answer | voicemail | busy | failed
     plan_tier: str | None = None
-    confirmed: bool | None = None
+    confirmed: StrictBool | None = None
     transcript: str = ""
 
 

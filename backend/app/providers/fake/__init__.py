@@ -2,6 +2,7 @@
 
 import itertools
 
+from app.services.keys import customer_key
 from app.tools.definitions import (
     AeLookupOut,
     GmailReplyIn,
@@ -10,7 +11,7 @@ from app.tools.definitions import (
     VoiceStartIn,
     VoiceStartOut,
 )
-from app.tools.registry import PermanentToolError, TransientToolError
+from app.tools.registry import AmbiguousToolError, PermanentToolError, TransientToolError
 
 DEFAULT_AES = {
     "jai@novacrm.example": AeLookupOut(found=True, name="Jai Krishna", email="jai@novacrm.example",
@@ -57,15 +58,25 @@ class FakeVoice:
 
 class FakeRocketlane:
     def __init__(self, failures: int = 0, timeout_after_create: bool = False,
-                 existing: list[dict] | None = None):
+                 existing: list[dict] | None = None, search_lag: int = 0):
         self.failures_left, self.timeout_after_create = failures, timeout_after_create
         self.projects: list[dict] = list(existing or [])
         self._ids = itertools.count(1001)
+        # Rocketlane search is eventually consistent ("a couple of seconds"): a new project stays
+        # invisible to the next `search_lag` find calls.
+        self.search_lag = search_lag
+        self._hidden: dict[int, int] = {}
 
     def find_project(self, customer_name: str, external_reference_id: str) -> str | None:
+        for pid in list(self._hidden):
+            self._hidden[pid] -= 1
+            if self._hidden[pid] < 0:
+                del self._hidden[pid]
         for p in self.projects:
+            if p["projectId"] in self._hidden:
+                continue
             if p.get("externalReferenceId") == external_reference_id or \
-                    p["customer"]["companyName"].casefold() == customer_name.casefold():
+                    customer_key(p["customer"]["companyName"]) == customer_key(customer_name):
                 return str(p["projectId"])
         return None
 
@@ -75,9 +86,11 @@ class FakeRocketlane:
             raise TransientToolError("rocketlane 503")
         project = {**payload, "projectId": next(self._ids)}
         self.projects.append(project)
+        if self.search_lag:
+            self._hidden[project["projectId"]] = self.search_lag
         if self.timeout_after_create:
             self.timeout_after_create = False
-            raise TransientToolError("read timeout after request was sent")
+            raise AmbiguousToolError("read timeout after request was sent")
         return str(project["projectId"])
 
 
@@ -112,10 +125,11 @@ class FakeSlack:
 
 class FakeWorld:
     def __init__(self, *, voice_down=False, rocketlane_failures=0, rocketlane_timeout_after_create=False,
-                 existing_projects=None, slack_connect_enabled=True, taken_channel_names=None, aes=None):
+                 existing_projects=None, slack_connect_enabled=True, taken_channel_names=None, aes=None,
+                 rocketlane_search_lag=0):
         self.directory = FakeDirectory(aes)
         self.gmail = FakeGmail()
         self.voice = FakeVoice(down=voice_down)
         self.rocketlane = FakeRocketlane(rocketlane_failures, rocketlane_timeout_after_create,
-                                         existing_projects)
+                                         existing_projects, rocketlane_search_lag)
         self.slack = FakeSlack(slack_connect_enabled, taken_channel_names)

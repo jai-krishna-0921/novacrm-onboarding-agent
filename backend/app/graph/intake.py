@@ -6,10 +6,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.config import Tier
-from app.graph.state import Deps, OnboardingState, customer_key
+from app.graph.state import Deps, OnboardingState
 from app.guardrails.decision import CallOutcome, CallResult, decide_tier
 from app.guardrails.input import validate_deal
 from app.llm.schemas import DealFields, TranscriptReading
+from app.services.keys import customer_key, opportunity_key
 from app.tools.registry import ToolFailed
 
 AGENT = "intake"
@@ -35,6 +36,7 @@ def build_intake(d: Deps):
             if fields.opportunity_id != m.group(1):
                 rationale += f"; opportunity id overridden by regex ({fields.opportunity_id!r} -> {m.group(1)})"
             fields.opportunity_id = m.group(1)
+        fields.opportunity_id = opportunity_key(fields.opportunity_id)
         d.audit(s, AGENT, "extract_fields", rationale, input={"subject": email["subject"]},
                 output=fields.model_dump())
         return {"extracted": fields.model_dump()}
@@ -45,7 +47,7 @@ def build_intake(d: Deps):
         if fields.deal_count != 1:
             d.audit(s, AGENT, "validate", f"email announces {fields.deal_count} deals; one deal per email",
                     status="escalated")
-            return d.escalate(s, AGENT, f"Email announces {fields.deal_count} deals; needs a human to split")
+            return d.escalate(s, AGENT, f"Email announces {fields.deal_count} deals; needs a human to split", "input")
         d.audit(s, AGENT, "validate", "all required fields present and valid" if not issues
                 else f"cannot proceed: {issues}", output={"issues": issues},
                 status="ok" if not issues else "blocked")
@@ -64,19 +66,22 @@ def build_intake(d: Deps):
                 run_id=s["run_id"], idempotency_key=f"clarify:{s['run_id']}",
                 rationale=f"missing/invalid fields: {issues}")
         except ToolFailed as e:
-            return d.escalate(s, AGENT, f"Could not email the AE for clarification: {e.reason}")
+            return d.escalate(s, AGENT, f"Could not email the AE for clarification: {e.reason}", "system")
         return d.set_status(s, "AWAITING_CLARIFICATION")
 
     def lookup_ae(s: OnboardingState) -> dict:
         sender = s["email"]["sender"]
-        who = d.registry.call(AGENT, "ae_lookup", {"email": sender}, run_id=s["run_id"])
-        if not (who.found and who.active):
-            return d.escalate(s, AGENT, f"Email sender {sender} is not an active AE in the directory")
         ae_email = s["extracted"]["ae_email"]
-        ae = who if ae_email.casefold() == sender.casefold() else \
-            d.registry.call(AGENT, "ae_lookup", {"email": ae_email}, run_id=s["run_id"])
+        try:
+            who = d.registry.call(AGENT, "ae_lookup", {"email": sender}, run_id=s["run_id"])
+            if not (who.found and who.active):
+                return d.escalate(s, AGENT, f"Email sender {sender} is not an active AE in the directory", "input")
+            ae = who if ae_email.casefold() == sender.casefold() else \
+                d.registry.call(AGENT, "ae_lookup", {"email": ae_email}, run_id=s["run_id"])
+        except ToolFailed as e:
+            return d.escalate(s, AGENT, f"AE directory unavailable: {e.reason}", "system")
         if not (ae.found and ae.active and ae.phone):
-            return d.escalate(s, AGENT, f"AE {ae_email} not found/active or has no phone number")
+            return d.escalate(s, AGENT, f"AE {ae_email} not found/active or has no phone number", "input")
         d.audit(s, AGENT, "lookup_ae", f"AE {ae.name} found; will call to confirm tier")
         return {"ae": ae.model_dump()}
 
@@ -91,15 +96,19 @@ def build_intake(d: Deps):
                 run_id=s["run_id"], idempotency_key=f"call:{s['run_id']}:{attempt}:{s.get('escalation_count', 0)}",
                 rationale=f"tier confirmation call, attempt {attempt}")
         except ToolFailed as e:
-            return {**d.escalate(s, AGENT, f"Could not place call to AE: {e.reason}"), "call_attempts": attempt}
+            return {**d.escalate(s, AGENT, f"Could not place call to AE: {e.reason}", "tier"), "call_attempts": attempt}
         return {"call_attempts": attempt, "provider_call_id": out.provider_call_id,
                 **d.set_status(s, "AWAITING_CALL")}
 
     def await_call(s: OnboardingState) -> dict:
-        # Only the interrupt lives here: this node re-runs on resume, so it must have no side effects.
-        result = interrupt({"type": "call", "provider_call_id": s["provider_call_id"],
-                            "attempt": s["call_attempts"]})
-        return {"call_result": CallResult.model_validate(result).model_dump()}
+        # Only interrupts live here: this node re-runs on resume, so it must have no side effects.
+        # A result for any other call (late webhook from an earlier attempt, misrouting) is ignored
+        # and we keep waiting for the pending call.
+        expected = s["provider_call_id"]
+        while True:
+            raw = interrupt({"type": "call", "provider_call_id": expected, "attempt": s["call_attempts"]})
+            if isinstance(raw, dict) and raw.get("provider_call_id") == expected:
+                return {"call_result": CallResult.model_validate(raw).model_dump()}
 
     def interpret_call(s: OnboardingState) -> dict:
         result = CallResult.model_validate(s["call_result"])
@@ -119,7 +128,7 @@ def build_intake(d: Deps):
                     **d.set_status(s, "TIER_CONFIRMED", plan_tier=decision.tier.value)}
         if s["call_attempts"] >= d.settings.call_max_attempts:
             return d.escalate(s, AGENT, f"No clear plan tier after {s['call_attempts']} call attempts "
-                                        f"(last: {decision.rationale})")
+                                        f"(last: {decision.rationale})", "tier")
         return {"last_call_rationale": decision.rationale}
 
     def check_duplicate(s: OnboardingState) -> dict:
@@ -130,14 +139,14 @@ def build_intake(d: Deps):
         if other := d.store.find_active_run(opportunity_id=x.get("opportunity_id"), customer_key=key,
                                             exclude_run_id=s["run_id"]):
             return d.escalate(s, AGENT, f"Existing onboarding run {other['id']} already has a project "
-                                        f"for this customer/opportunity")
+                                        f"for this customer/opportunity", "duplicate")
         try:
             found = d.registry.call(AGENT, "rocketlane_find_project", dict(
                 customer_name=x["customer_name"], external_reference_id=_ext_ref(s)), run_id=s["run_id"])
         except ToolFailed as e:
-            return d.escalate(s, AGENT, f"Rocketlane API unavailable during duplicate check: {e.reason}")
+            return d.escalate(s, AGENT, f"Rocketlane API unavailable during duplicate check: {e.reason}", "system")
         if found.project_id:
-            return d.escalate(s, AGENT, f"Existing Rocketlane project {found.project_id} for this customer")
+            return d.escalate(s, AGENT, f"Existing Rocketlane project {found.project_id} for this customer", "duplicate")
         d.audit(s, AGENT, "check_duplicate", "no existing run or Rocketlane project")
         return {}
 
@@ -156,7 +165,7 @@ def build_intake(d: Deps):
                                   rationale=f"tier {rule.tier} ({s['tier_source']}) -> template "
                                             f"{rule.template_id}, {rule.duration_days} days, {rule.csm_model} CSM")
         except ToolFailed as e:
-            return d.escalate(s, AGENT, f"Rocketlane API unavailable, project not created: {e.reason}")
+            return d.escalate(s, AGENT, f"Rocketlane API unavailable, project not created: {e.reason}", "system")
         d.audit(s, AGENT, "create_project", f"created from {rule.label} template",
                 output={"project_id": out.project_id})
         return {"project_id": out.project_id,

@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel
 
 from app.services.store import Store
-from app.tools.registry import ToolRegistry, TransientToolError
+from app.tools.registry import AmbiguousToolError, PermanentToolError, ToolRegistry
 
 ALLOWLIST: dict[str, set[str]] = {
     "intake": {"ae_lookup", "gmail_reply", "voice_start_call",
@@ -176,11 +176,12 @@ def build_registry(store: Store, p: Providers, **kw) -> ToolRegistry:
     def rl_create(a: RlCreateIn) -> RlCreateOut:
         try:
             return RlCreateOut(project_id=p.rocketlane.create_project(rocketlane_project_payload(a)))
-        except TransientToolError:
-            # The create may have been accepted before the timeout: look before retrying blind.
+        except AmbiguousToolError as e:
+            # The create may have been accepted. Look once; if search hasn't indexed it yet, a blind
+            # re-POST could duplicate the project, so stop and let a human verify.
             if existing := p.rocketlane.find_project(a.customer_name, a.external_reference_id):
                 return RlCreateOut(project_id=existing)
-            raise
+            raise PermanentToolError(f"create outcome unknown after timeout ({e}); verify in Rocketlane") from e
 
     def slack_topic(a: SlackTopicIn) -> Ok:
         p.slack.set_topic(a.channel_id, a.topic)

@@ -1,4 +1,3 @@
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -8,6 +7,7 @@ from typing import Any, TypedDict
 from app.config import Settings, Tier, TierRule, tier_rules
 from app.llm.client import LLM
 from app.services.audit import audit
+from app.services.keys import customer_key  # noqa: F401  (re-exported)
 from app.services.store import Store
 from app.tools.registry import ToolRegistry
 
@@ -29,7 +29,8 @@ class OnboardingState(TypedDict, total=False):
     channel_id: str
     status: str
     escalation_reason: str
-    escalated_by: str           # agent whose work resumes after a human "retry"
+    escalated_by: str           # agent that raised the escalation
+    escalation_kind: str        # tier | input | duplicate | system (decides allowed resolutions)
     escalation_count: int
     resolution: dict
 
@@ -56,10 +57,6 @@ class Deps:
         audit(self.store, state["run_id"], agent, step, input=input, output=output,
               rationale=rationale, status=status)
 
-    def escalate(self, state: OnboardingState, agent: str, reason: str) -> dict:
-        self.audit(state, agent, "escalate_request", reason, status="escalated")
-        return {"escalation_reason": reason, "escalated_by": agent}
-
-
-def customer_key(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", name.casefold())
+    def escalate(self, state: OnboardingState, agent: str, reason: str, kind: str) -> dict:
+        self.audit(state, agent, "escalate_request", f"[{kind}] {reason}", status="escalated")
+        return {"escalation_reason": reason, "escalated_by": agent, "escalation_kind": kind}

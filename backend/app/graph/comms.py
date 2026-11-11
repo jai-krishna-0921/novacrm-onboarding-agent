@@ -78,7 +78,7 @@ def build_comms(d: Deps):
             call(AGENT, "slack_post_message", {"channel_id": cid, "text": s["welcome_message"]}, run_id=rid,
                  idempotency_key=f"welcome:{rid}")
         except ToolFailed as e:
-            return d.escalate(s, AGENT, f"Slack setup failed ({e.tool}: {e.reason}); Rocketlane project kept")
+            return d.escalate(s, AGENT, f"Slack setup failed ({e.tool}: {e.reason}); Rocketlane project kept", "system")
         d.audit(s, AGENT, "setup_channel", "channel ready", output={"channel_id": cid})
         return {"channel_id": cid}
 

@@ -6,17 +6,16 @@ Retell webhook that resumes the graph in production.
 
 import json
 import re
-import uuid
 
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.graph.root import build_graph, validate_resolution
+from app.graph.root import build_graph
 from app.graph.state import Deps
 from app.llm.schemas import DealFields, TranscriptReading, WelcomeDraft
 from app.providers.fake import FakeWorld
+from app.services.runner import Runner
 from app.services.store import MemoryStore, now
 from app.tools.definitions import build_registry
 
@@ -79,30 +78,31 @@ class Harness:
         registry = build_registry(self.store, self.world, sleep=lambda s: None)
         self.deps = Deps(settings, self.store, registry, self.llm, sleep=lambda s: None)
         self.graph = build_graph(self.deps, InMemorySaver())
+        self.runner = Runner(self.graph, self.store)
 
     def _cfg(self, run_id: str) -> dict:
         return {"configurable": {"thread_id": run_id}}
 
     def receive(self, email: InboundEmail) -> str:
-        for r in self.store.runs.values():
-            if r.get("gmail_message_id") == email.message_id:
-                return r["id"]  # duplicate Gmail notification: same run, nothing re-executed
-        run_id = str(uuid.uuid4())
-        self._drive(run_id, {"run_id": run_id, "email": email.model_dump()})
+        run_id, out = self.runner.start(email.model_dump())
+        if out is not None:
+            self._settle(run_id, out)
         return run_id
 
     def resolve(self, run_id: str, resolution: dict) -> None:
-        validate_resolution(resolution)
-        self._drive(run_id, Command(resume=resolution))
+        self._settle(run_id, self.runner.resolve(run_id, resolution))
 
     def _drive(self, run_id: str, payload) -> None:
-        out = self.graph.invoke(payload, self._cfg(run_id))
+        """Low-level: invoke (or resume from checkpoint with payload=None) and settle call interrupts."""
+        self._settle(run_id, self.runner.invoke(run_id, payload))
+
+    def _settle(self, run_id: str, out: dict) -> None:
+        # Stand-in for the Retell webhook: answer each pending call from the voice script.
         while out.get("__interrupt__"):
             req = out["__interrupt__"][0].value
             if req["type"] != "call":
                 return  # waiting for a human
-            result = self.world.voice.result_for(req["provider_call_id"])
-            out = self.graph.invoke(Command(resume=result), self._cfg(run_id))
+            out = self.runner.resume_call(run_id, self.world.voice.result_for(req["provider_call_id"]))
 
     def status(self, run_id: str) -> str:
         return self.store.runs[run_id]["status"]

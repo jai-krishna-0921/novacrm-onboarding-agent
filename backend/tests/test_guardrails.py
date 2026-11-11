@@ -139,6 +139,12 @@ def test_welcome_mentioning_prices_fails(settings, extra):
     assert any("price" in p for p in problems)
 
 
+@pytest.mark.parametrize("ok", ["We'll make 2 decisions together in Kickoff.",
+                                "Expect 3 marches through the checklist.", "Ping us 24/7 here."])
+def test_welcome_date_check_has_no_false_positives_on_ordinary_words(settings, ok):
+    assert check_welcome(_welcome() + " " + ok, "Acme Corp", tier_rules(settings)[Tier.ENTERPRISE]) == []
+
+
 @pytest.mark.parametrize(
     "customer,tier,expected",
     [

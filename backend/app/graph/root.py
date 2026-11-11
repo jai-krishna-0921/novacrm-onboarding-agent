@@ -8,13 +8,23 @@ from app.graph.comms import build_comms
 from app.graph.intake import build_intake
 from app.graph.state import Deps, OnboardingState
 
-ACTIONS = {"set_tier", "retry", "cancel"}
+# Which human resolutions each escalation kind accepts. Only an unconfirmed-tier escalation may be
+# resolved by a human stating the tier; every other kind must go back through the normal checks.
+ALLOWED = {
+    "tier": {"set_tier", "retry", "cancel"},
+    "input": {"retry", "cancel"},
+    "duplicate": {"retry", "cancel"},
+    "system": {"retry", "cancel"},
+}
 
 
-def validate_resolution(resolution: dict) -> dict:
-    action = resolution.get("action")
-    if action not in ACTIONS:
-        raise ValueError(f"action must be one of {sorted(ACTIONS)}")
+def validate_resolution(resolution: dict, state: dict) -> dict:
+    action = resolution.get("action") if isinstance(resolution, dict) else None
+    kind = state.get("escalation_kind", "system")
+    if action not in ALLOWED[kind]:
+        raise ValueError(f"'{action}' is not allowed for a {kind} escalation; allowed: {sorted(ALLOWED[kind])}")
+    if action == "set_tier" and state.get("project_id"):
+        raise ValueError("project already exists; its tier can't be changed here")
     if action == "set_tier" and resolution.get("tier") not in {t.value for t in Tier}:
         raise ValueError("tier must be 'enterprise' or 'growth'")
     if not resolution.get("by"):
@@ -45,13 +55,20 @@ def build_graph(d: Deps, checkpointer):
     def escalate(s: OnboardingState) -> dict:
         n = s.get("escalation_count", 0) + 1
         d.store.upsert_escalation(f"{s['run_id']}:{n}", dict(
-            run_id=s["run_id"], reason=s["escalation_reason"], agent=s.get("escalated_by"), status="open"))
+            run_id=s["run_id"], reason=s["escalation_reason"], kind=s.get("escalation_kind"),
+            agent=s.get("escalated_by"), status="open"))
         d.audit(s, "root", "escalate", s["escalation_reason"], status="escalated")
         return {"escalation_count": n, **d.set_status(s, "ESCALATED")}
 
     def await_human(s: OnboardingState) -> dict:
-        resolution = interrupt({"type": "escalation", "reason": s["escalation_reason"]})
-        return {"resolution": validate_resolution(resolution)}
+        # Invalid resolutions are rejected by re-asking (defence in depth behind the API's own check).
+        while True:
+            resolution = interrupt({"type": "escalation", "kind": s.get("escalation_kind"),
+                                    "reason": s["escalation_reason"]})
+            try:
+                return {"resolution": validate_resolution(resolution, s)}
+            except ValueError:
+                continue
 
     def apply_resolution(s: OnboardingState) -> dict:
         r = s["resolution"]
@@ -60,7 +77,7 @@ def build_graph(d: Deps, checkpointer):
         d.audit(s, "root", "resolve", f"human resolution by {r['by']}: {r['action']}", input=r)
         if r["action"] == "cancel":
             return d.set_status(s, "CANCELLED")
-        update: dict = {"escalation_reason": None}
+        update: dict = {"escalation_reason": None, "escalation_kind": None}
         if r["action"] == "set_tier":
             update |= {"plan_tier": r["tier"], "tier_source": f"human:{r['by']}"}
         else:
