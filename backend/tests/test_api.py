@@ -150,3 +150,48 @@ def test_resolve_on_a_run_that_is_not_escalated_is_rejected(env):
 def test_healthz(env):
     client, _, _ = env
     assert client.get("/healthz").json()["ok"] is True
+
+
+class FakeRetellPoll:
+    def __init__(self, calls):
+        self.calls, self.asked = calls, []
+
+    def get_call(self, call_id):
+        self.asked.append(call_id)
+        return self.calls.get(call_id)
+
+
+def test_scheduler_resumes_due_retry_waits(settings):
+    s = settings.model_copy(update={"gmail_push_token": TOKEN, "retell_api_key": KEY, "call_retry_delay_seconds": 30})
+    h = Harness(s, llm=FakeLLM(fields=DealFields(**GOOD)))
+    c = Container(settings=s, store=h.store, runner=h.runner, inbox=FakeInbox([EMAIL]), start_poller=False)
+    app = create_app(c)
+    client = TestClient(app)
+    push(client), push(client)
+    rid = only_run(h)
+    retell_post(client, analyzed(rid, reason="dial_no_answer"))
+    assert h.status(rid) == "AWAITING_RETRY" and len(h.world.voice.calls) == 1
+    app.state.tick(now=time.time() + 5)          # not due yet
+    assert len(h.world.voice.calls) == 1
+    app.state.tick(now=time.time() + 31)         # due -> next call placed
+    assert h.status(rid) == "AWAITING_CALL" and len(h.world.voice.calls) == 2
+
+
+def test_scheduler_reconciles_a_call_whose_webhook_never_arrived(settings):
+    s = settings.model_copy(update={"gmail_push_token": TOKEN, "retell_api_key": KEY})
+    h = Harness(s, llm=FakeLLM(fields=DealFields(**GOOD)))
+    poll = FakeRetellPoll({})
+    c = Container(settings=s, store=h.store, runner=h.runner, inbox=FakeInbox([EMAIL]), start_poller=False, voice=poll)
+    app = create_app(c)
+    client = TestClient(app)
+    push(client), push(client)
+    rid = only_run(h)
+    app.state.tick(now=time.time() + 60)          # too recent to poll
+    assert poll.asked == []
+    poll.calls["call-1"] = {**analyzed(rid)["call"], "call_status": "ongoing"}
+    app.state.tick(now=time.time() + 400)         # stale, but the call is still ongoing
+    assert poll.asked == ["call-1"] and h.status(rid) == "AWAITING_CALL"
+    poll.calls["call-1"] = analyzed(rid)["call"]
+    app.state.tick(now=time.time() + 400)         # ended + analyzed -> resumed via the same guarded path
+    assert h.status(rid) == "COMPLETED"
+    assert any(a["step"] == "voice_reconcile" for a in h.store.list_audit(rid))

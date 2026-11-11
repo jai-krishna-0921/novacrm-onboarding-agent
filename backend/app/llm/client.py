@@ -31,7 +31,11 @@ class LLM(Protocol):
               schema: type[T]) -> T: ...
 
 
-class LLMRefused(Exception):
+class LLMError(Exception):
+    """Any LLM failure after the client's own retries (outage, refusal, unparseable output)."""
+
+
+class LLMRefused(LLMError):
     pass
 
 
@@ -51,7 +55,10 @@ class LangChainLLM:
         system, version = load_prompt(prompt)
         runnable = self.chat.with_structured_output(schema, method="json_schema", include_raw=True)
         started = time.monotonic()
-        out = runnable.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        try:
+            out = runnable.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        except Exception as e:  # anthropic APIError/timeout, langchain errors: one type for the graph to handle
+            raise LLMError(f"{node}: {type(e).__name__}: {e}") from e
         raw = out["raw"]
         usage = getattr(raw, "usage_metadata", None) or {}
         tin, tout = usage.get("input_tokens", 0), usage.get("output_tokens", 0)

@@ -71,13 +71,20 @@ class RetellVoice:
                 "retell_llm_dynamic_variables": {"ae_name": a.ae_name, "customer_name": a.customer_name}}
         try:
             r = self.http.post("/v2/create-phone-call", json=body)
-        except httpx.ConnectError as e:
-            raise TransientToolError(f"connect error: {e}") from e
-        except httpx.TimeoutException as e:
-            # Unlike a project, a duplicated call attempt is harmless and bounded by max attempts.
-            raise TransientToolError(f"timeout: {e}") from e
-        if r.status_code == 429 or r.status_code >= 500:
+        except httpx.TransportError as e:
+            # Unlike a project, a duplicated call attempt is bounded by max attempts, and a result for an
+            # untracked call is ignored by the stale-call guard.
+            raise TransientToolError(f"{type(e).__name__}: {e}") from e
+        if r.status_code in (409, 429) or r.status_code >= 500:  # 409: new-number outbound hold
             raise TransientToolError(f"retell {r.status_code}: {r.text[:200]}")
         if r.status_code >= 400:
             raise PermanentToolError(f"retell {r.status_code}: {r.text[:200]}")
         return VoiceStartOut(provider_call_id=r.json()["call_id"])
+
+    def get_call(self, call_id: str) -> dict | None:
+        """Call object for reconciliation when a webhook was lost. None if unknown."""
+        r = self.http.get(f"/v2/get-call/{call_id}")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()

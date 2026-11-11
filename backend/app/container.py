@@ -16,6 +16,7 @@ class Container:
     runner: Runner
     inbox: Any = None            # GmailClient-like: current_history_id(), new_deal_emails(cursor), watch(topic)
     start_poller: bool = True
+    voice: Any = None            # RetellVoice-like: get_call(call_id) -> call object, for webhook reconciliation
 
 
 class DbDirectory:
@@ -60,14 +61,14 @@ def build_container(s: Settings) -> Container:
                                                                          s.retell_from_number),
                                   RocketlaneClient(s.rocketlane_base_url, s.rocketlane_api_key),
                                   SlackClient(s.slack_bot_token))
-        inbox = gmail
+        inbox, voice = gmail, providers.voice
     else:
         from app.providers.fake import FakeWorld
-        providers, inbox = FakeWorld(), None
+        providers, inbox, voice = FakeWorld(), None, None
 
     pool = ConnectionPool(s.database_url.replace("+psycopg", ""), max_size=10, open=True,
                           kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
     checkpointer = PostgresSaver(pool)
     deps = Deps(s, store, build_registry(store, providers), LangChainLLM(store, s.llm_model, s.anthropic_api_key))
     graph = build_graph(deps, checkpointer)
-    return Container(settings=s, store=store, runner=Runner(graph, store), inbox=inbox)
+    return Container(settings=s, store=store, runner=Runner(graph, store), inbox=inbox, voice=voice)

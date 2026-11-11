@@ -6,6 +6,9 @@ MemoryStore backs tests and fake-mode simulations; PgStore (app/db) implements t
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+RUN_FIELDS = {"status", "gmail_message_id", "opportunity_id", "customer_key", "customer_name", "plan_tier",
+              "rocketlane_project_id", "slack_channel_id", "error"}
+
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
@@ -50,7 +53,7 @@ class MemoryStore:
         return self.idem.get(key)
 
     def put_idem(self, key: str, value: dict) -> None:
-        self.idem[key] = value
+        self.idem.setdefault(key, value)  # first write wins (same as PgStore ON CONFLICT DO NOTHING)
 
     def add_audit(self, row: dict) -> None:
         self.audit_rows.append(row)
@@ -62,9 +65,11 @@ class MemoryStore:
         self.llm_calls.append(row)
 
     def upsert_run(self, run_id: str, **fields: Any) -> None:
+        if unknown := set(fields) - RUN_FIELDS:
+            raise ValueError(f"unknown run fields: {unknown}")
         if run_id not in self.runs:
             self._seq += 1
-            self.runs[run_id] = {"id": run_id, "created_at": now(), "_seq": self._seq}
+            self.runs[run_id] = {"id": run_id, "created_at": now(), "seq": self._seq}
         self.runs[run_id].update(fields, updated_at=now())
 
     def get_run(self, run_id: str) -> dict | None:
@@ -92,7 +97,7 @@ class MemoryStore:
         return [e for e in self.escalations.values() if status is None or e.get("status") == status]
 
     def list_runs(self, limit: int = 100) -> list[dict]:
-        return sorted(self.runs.values(), key=lambda r: r["_seq"], reverse=True)[:limit]
+        return sorted(self.runs.values(), key=lambda r: r["seq"], reverse=True)[:limit]
 
     def list_audit(self, run_id: str) -> list[dict]:
         return [r for r in self.audit_rows if r["run_id"] == run_id]

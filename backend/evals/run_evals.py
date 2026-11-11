@@ -137,6 +137,7 @@ def main() -> int:
     ap.add_argument("--model")
     ap.add_argument("--judge-model")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--min-transcript-acc", type=float, default=1.0, help="README: 100%%")
     a = ap.parse_args()
     s = Settings()
     model = a.model or s.llm_model
@@ -148,7 +149,10 @@ def main() -> int:
     if a.suite in ("all", "extraction"):
         res = run_extraction(llm, load("extraction.jsonl")[: a.limit])
         clean = [r for r in res if "clean" in r["tags"]]
-        field_acc = {f: sum(r["fields"].get(f, True) for r in res) / len(res) for f in FIELDS}
+        field_acc = {}
+        for f in FIELDS:
+            scored = [r["fields"][f] for r in res if f in r["fields"]]
+            field_acc[f] = round(sum(scored) / len(scored), 3) if scored else None
         report["extraction"] = {"passed": f"{sum(r['passed'] for r in res)}/{len(res)}", "by_tag": by_tag(res),
                                 "field_accuracy": field_acc, "misses": [r for r in res if not r["passed"]]}
         ok &= all(r["passed"] for r in clean) and not any(r["leaked"] for r in res)
@@ -157,7 +161,9 @@ def main() -> int:
         fc = [r["id"] for r in res if r["false_confirmed"]]
         report["transcripts"] = {"passed": f"{sum(r['passed'] for r in res)}/{len(res)}", "false_confirmed": fc,
                                  "by_tag": by_tag(res), "misses": [r for r in res if not r["passed"]]}
-        ok &= not fc
+        acc = sum(r["passed"] for r in res) / len(res)
+        report["transcripts"]["accuracy"] = round(acc, 3)
+        ok &= not fc and acc >= a.min_transcript_acc
     if a.suite in ("all", "welcome"):
         res = run_welcome(llm, judge, s, load("welcome.jsonl")[: a.limit])
         report["welcome"] = {"passed": f"{sum(r['passed'] for r in res)}/{len(res)}",

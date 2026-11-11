@@ -20,15 +20,19 @@ class RocketlaneClient:
     def _request(self, method: str, path: str, *, write: bool = False, **kw) -> dict:
         try:
             r = self.http.request(method, path, **kw)
-        except httpx.ConnectError as e:
-            raise TransientToolError(f"connect error: {e}") from e
-        except httpx.TimeoutException as e:
-            # A write that timed out after sending may have been applied.
-            if write and not isinstance(e, httpx.ConnectTimeout):
-                raise AmbiguousToolError(f"timeout after sending {method} {path}") from e
-            raise TransientToolError(f"timeout: {e}") from e
-        if r.status_code in (429,) or r.status_code >= 500:
-            raise TransientToolError(f"{r.status_code}: {_err(r)}")
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+            raise TransientToolError(f"connect error: {e}") from e  # request never sent
+        except httpx.TransportError as e:
+            # Read timeout, reset, protocol error after the request went out: a write may have been applied.
+            if write:
+                raise AmbiguousToolError(f"{type(e).__name__} after sending {method} {path}") from e
+            raise TransientToolError(f"{type(e).__name__}: {e}") from e
+        if r.status_code == 429:
+            raise TransientToolError(f"429: {_err(r)}")  # rate limited: not processed
+        if r.status_code >= 500:
+            # A gateway 5xx on a write can mean it committed: never re-POST blind.
+            exc = AmbiguousToolError if write else TransientToolError
+            raise exc(f"{r.status_code}: {_err(r)}")
         if r.status_code >= 400:
             raise PermanentToolError(f"{r.status_code}: {_err(r)}")
         return r.json() if r.content else {}

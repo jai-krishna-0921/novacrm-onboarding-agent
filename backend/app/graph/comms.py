@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from app.config import Tier, TierRule
 from app.graph.state import Deps, OnboardingState
 from app.guardrails.output import channel_name, check_welcome
+from app.llm.client import LLMError
 from app.llm.schemas import WelcomeDraft
 from app.tools.registry import ToolFailed
 
@@ -42,8 +43,12 @@ def build_comms(d: Deps):
         facts = welcome_facts(s, rule)
         problems: list[str] = []
         for attempt in (1, 2):
-            draft = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="draft_welcome", prompt="welcome_v1",
-                                user=json.dumps(facts), schema=WelcomeDraft).message
+            try:
+                draft = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="draft_welcome", prompt="welcome_v1",
+                                    user=json.dumps(facts), schema=WelcomeDraft).message
+            except LLMError as e:
+                problems = [f"LLM unavailable: {e}"]
+                break
             problems = check_welcome(draft, facts["customer_name"], rule)
             if not problems:
                 d.audit(s, AGENT, "draft_welcome", f"LLM draft passed fact checks (attempt {attempt})",

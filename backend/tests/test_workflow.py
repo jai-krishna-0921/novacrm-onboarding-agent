@@ -287,3 +287,16 @@ def test_unknown_sender_is_stopped_before_any_llm_call_or_reply(settings):
     assert h.status(rid) == "ESCALATED"
     assert h.llm.calls == {}, "LLM must not run on mail from unknown senders"
     assert h.world.gmail.sent == [], "never auto-reply to unknown senders"
+
+
+def test_retry_delay_is_a_durable_wait_not_a_sleep(settings):
+    s = settings.model_copy(update={"call_retry_delay_seconds": 30})
+    h = Harness(s, llm=FakeLLM(fields=DealFields(**GOOD)))
+    h.auto_wait = False
+    h.world.voice.script = [NO_ANSWER, ENTERPRISE_CALL]
+    rid = h.receive(EMAIL)
+    assert h.status(rid) == "AWAITING_RETRY" and len(h.world.voice.calls) == 1
+    pending = h.runner.pending(rid)
+    assert pending["type"] == "wait" and pending["until"] > pending["since"]
+    h.resume_wait(rid)
+    assert h.status(rid) == "COMPLETED" and len(h.world.voice.calls) == 2

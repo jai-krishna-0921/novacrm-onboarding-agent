@@ -69,6 +69,7 @@ class Harness:
         self.deps = Deps(settings, self.store, registry, self.llm, sleep=lambda s: None)
         self.graph = build_graph(self.deps, InMemorySaver())
         self.runner = Runner(self.graph, self.store)
+        self.auto_wait = True  # resume durable retry waits immediately (tests can turn this off)
 
     def _cfg(self, run_id: str) -> dict:
         return {"configurable": {"thread_id": run_id}}
@@ -90,9 +91,15 @@ class Harness:
         # Stand-in for the Retell webhook: answer each pending call from the voice script.
         while out.get("__interrupt__"):
             req = out["__interrupt__"][0].value
-            if req["type"] != "call":
-                return  # waiting for a human
-            out = self.runner.resume_call(run_id, self.world.voice.result_for(req["provider_call_id"]))
+            if req["type"] == "wait" and self.auto_wait:
+                out = self.runner.resume_wait(run_id)
+            elif req["type"] == "call":
+                out = self.runner.resume_call(run_id, self.world.voice.result_for(req["provider_call_id"]))
+            else:
+                return  # waiting for a human (or a durable wait when auto_wait is off)
+
+    def resume_wait(self, run_id: str) -> None:
+        self._settle(run_id, self.runner.resume_wait(run_id))
 
     def status(self, run_id: str) -> str:
         return self.store.runs[run_id]["status"]

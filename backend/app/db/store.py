@@ -21,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.services.store import RUN_FIELDS as SHARED_RUN_FIELDS
 from app.services.store import now
 
 metadata = MetaData()
@@ -66,6 +67,7 @@ ae_directory = Table("ae_directory", metadata, Column("email", String, primary_k
                      Column("phone", String), Column("active", Boolean, nullable=False, default=True))
 
 RUN_FIELDS = {c.name for c in runs.columns} - {"id", "seq", "created_at", "updated_at"}
+assert RUN_FIELDS == SHARED_RUN_FIELDS, f"run columns drifted from MemoryStore: {RUN_FIELDS ^ SHARED_RUN_FIELDS}"
 
 
 def _rows(result) -> list[dict]:
@@ -145,8 +147,9 @@ class PgStore:
         match = runs.c.customer_key == customer_key
         if opportunity_id:
             match = match | (runs.c.opportunity_id == opportunity_id)
+        live = runs.c.status.is_(None) | runs.c.status.not_in(["FAILED", "CANCELLED"])
         q = select(runs).where(match, runs.c.id != exclude_run_id, runs.c.rocketlane_project_id.is_not(None),
-                               runs.c.status.not_in(["FAILED", "CANCELLED"])).limit(1)
+                               live).limit(1)
         with self.engine.connect() as c:
             r = c.execute(q).first()
         return dict(r._mapping) if r else None

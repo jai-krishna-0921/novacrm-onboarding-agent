@@ -12,6 +12,7 @@ from app.tools.definitions import GmailReplyIn, GmailReplyOut, InboundEmail
 from app.tools.registry import PermanentToolError, TransientToolError
 
 DEAL_SUBJECT = re.compile(r"closed[\s-]*won|new deal|deal closed", re.I)
+AUTO_SUBJECT = re.compile(r"^(automatic reply|auto[- ]?reply|out of (the )?office|undeliverable|delivery status)", re.I)
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
@@ -46,9 +47,12 @@ def _headers(msg: dict) -> dict[str, str]:
 
 def to_inbound(msg: dict) -> InboundEmail:
     h = _headers(msg)
+    subject = h.get("subject", "")
+    auto = (h.get("auto-submitted", "no").lower() != "no" or "x-autoreply" in h or "x-autorespond" in h
+            or h.get("precedence", "").lower() in ("bulk", "auto_reply", "junk") or bool(AUTO_SUBJECT.search(subject)))
     return InboundEmail(message_id=msg["id"], thread_id=msg["threadId"],
                         rfc_message_id=h.get("message-id", ""), sender=parseaddr(h.get("from", ""))[1].lower(),
-                        subject=h.get("subject", ""), body=extract_text(msg.get("payload", {})))
+                        subject=subject, body=extract_text(msg.get("payload", {})), auto_reply=auto)
 
 
 def build_reply(a: GmailReplyIn, sender: str) -> dict:
@@ -79,8 +83,8 @@ class GmailClient:
         except Exception as e:  # googleapiclient.errors.HttpError and transport errors
             status = getattr(getattr(e, "resp", None), "status", 0)
             if status == 404:
-                raise PermanentToolError("history_too_old") from e
-            if status in (0, 429) or status >= 500:
+                raise PermanentToolError("not_found") from e
+            if status in (0, 429) or status >= 500 or (status == 403 and "rateLimitExceeded" in str(e)):
                 raise TransientToolError(f"gmail {status}: {e}") from e
             raise PermanentToolError(f"gmail {status}: {e}") from e
 
@@ -103,9 +107,14 @@ class GmailClient:
         ids: list[str] = []
         cursor, token = start_history_id, None
         while True:
-            body = self._exec(self.service.users().history().list(
-                userId="me", startHistoryId=start_history_id, historyTypes=["messageAdded"], labelId="INBOX",
-                **({"pageToken": token} if token else {})))
+            try:
+                body = self._exec(self.service.users().history().list(
+                    userId="me", startHistoryId=start_history_id, historyTypes=["messageAdded"], labelId="INBOX",
+                    **({"pageToken": token} if token else {})))
+            except PermanentToolError as e:
+                if str(e) == "not_found":
+                    raise PermanentToolError("history_too_old") from e
+                raise
             for h in body.get("history", []):
                 for added in h.get("messagesAdded", []):
                     if (mid := added["message"]["id"]) not in ids:
@@ -114,9 +123,24 @@ class GmailClient:
             token = body.get("nextPageToken")
             if not token:
                 break
+        return self._fetch(ids, is_relevant), cursor
+
+    def recent_deal_emails(self, is_relevant: Callable[[InboundEmail], bool]) -> list[InboundEmail]:
+        """Full-sync fallback when the history cursor is too old: inbox mail from the last 2 days."""
+        body = self._exec(self.service.users().messages().list(userId="me", q="in:inbox newer_than:2d",
+                                                                maxResults=100))
+        return self._fetch([m["id"] for m in body.get("messages", [])], is_relevant)
+
+    def _fetch(self, ids: list[str], is_relevant: Callable[[InboundEmail], bool]) -> list[InboundEmail]:
         out = []
         for mid in ids:
-            e = to_inbound(self._exec(self.service.users().messages().get(userId="me", id=mid, format="full")))
-            if e.sender != self.self_address and is_relevant(e):
+            try:
+                msg = self._exec(self.service.users().messages().get(userId="me", id=mid, format="full"))
+            except PermanentToolError as e:
+                if str(e) == "not_found":
+                    continue  # deleted/moved between history.list and get: skip it, keep the rest
+                raise
+            e = to_inbound(msg)
+            if e.sender != self.self_address and not e.auto_reply and is_relevant(e):
                 out.append(e)
-        return out, cursor
+        return out

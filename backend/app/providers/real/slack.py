@@ -8,7 +8,7 @@ from app.tools.definitions import SlackInviteSharedOut
 from app.tools.registry import PermanentToolError, TransientToolError
 
 CONNECT_UNAVAILABLE = {"not_paid", "restricted_action", "not_allowed_token_type", "team_not_found",
-                       "invite_not_allowed", "not_supported", "missing_scope", "user_not_found"}
+                       "invite_not_allowed", "not_supported", "user_not_found"}
 
 
 def _client(token: str) -> Any:
@@ -27,6 +27,8 @@ class SlackClient:
     def _call(self, fn, *, ok_errors: frozenset[str] = frozenset(), **kw) -> dict | None:
         try:
             return fn(**kw)
+        except (TimeoutError, ConnectionError, OSError) as e:  # urllib URLError is an OSError
+            raise TransientToolError(f"slack transport: {e}") from e
         except SlackApiError as e:
             code = e.response.get("error", "unknown") if e.response is not None else "unknown"
             if code in ok_errors:

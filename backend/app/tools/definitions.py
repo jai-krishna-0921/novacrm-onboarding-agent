@@ -29,6 +29,7 @@ class InboundEmail(BaseModel):
     sender: str
     subject: str
     body: str
+    auto_reply: bool = False  # out-of-office / Auto-Submitted mail: never starts a run
 
 
 class AeLookupIn(BaseModel):

@@ -41,7 +41,7 @@ Scoring:
 - Label accuracy: exact match on `plan_tier`, and separately on `ae_confirmed`. A case passes only if both match.
 - **False-confirmed count (critical metric, report on its own line):** cases where the model returned a tier other than `unclear` AND `ae_confirmed=true`, while the expected result is not that same tier with `true`. Any value above 0 fails the suite, whatever the overall accuracy. One of these errors would create a project on the wrong tier, or on an unconfirmed one.
 - A false `unclear` costs a retry. Report it, but it is not critical.
-- Plan §14 threshold: 100%. `hedged` and `voicemail` must be `unclear`.
+- Plan §14 threshold: 100% (`--min-transcript-acc`, default 1.0). `hedged` and `voicemail` must be `unclear`. The suite fails on any false-confirmed **or** below-threshold accuracy (an always-`unclear` model fails).
 
 ## welcome.jsonl (prompt `welcome_v1`, schema `WelcomeDraft`)
 
@@ -55,6 +55,8 @@ Tags: `enterprise`, `growth`, `unicode`, `long_name`, `null_contact`, `tempting_
 
 Scoring:
 1. Deterministic: `app.guardrails.output.check_welcome(message, customer_name, rule)` must return `[]`. Also check that the message is under 120 words, that the phases appear in order (Kickoff, Data Migration, Configuration, Go-Live), and, for `null_contact`, that no person's name is invented.
-2. LLM judge (Sonnet, separate prompt): personalization, tone, clarity and no invented commitments, each scored 1 to 4 with a one-line reason. Threshold: an average of at least 3, and every fact check passes.
+2. LLM judge (`LLM_JUDGE_MODEL`, default Haiku 5.5 for budget; pass `--judge-model claude-sonnet-5-5` for an independent stronger judge; separate prompt `judge_v1`): personalization, tone, clarity and no invented commitments, each scored 1 to 4 with a one-line reason. Threshold: an average of at least 3, and every fact check passes.
 
-`guardrail_trap` cases (`wel-07` "Monday Labs" and `wel-08` "14-Day Fitness Studios") fail `check_welcome` even with a perfect draft. `DATE_RE` matches weekday names, and `DURATION_RE` picks up the "14-Day" inside the name. These are known false positives in the guardrail, not model errors. Report them apart from the other cases. Do not drop them.
+`guardrail_trap` cases (`wel-07` "Monday Labs", `wel-08` "14-Day Fitness Studios") used to fail `check_welcome` on the customer name itself. Fixed: the name is masked before the date/duration/price checks. They are now ordinary cases that must pass.
+
+Not implemented yet: the `null_contact` "no invented person name" check (the judge's `no_invented_commitments` score covers it only indirectly).

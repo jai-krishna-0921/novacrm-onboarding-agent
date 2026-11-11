@@ -171,3 +171,14 @@ def test_custom_relevance_predicate_keeps_ae_mail_with_non_deal_subject():
     assert g.new_deal_emails("800")[0] == []  # default: subject filter only
     emails, _ = g.new_deal_emails("800", is_relevant=lambda e: e.sender == "jai@novacrm.example")
     assert [e.message_id for e in emails] == ["18c1"]
+
+
+def test_slack_transport_errors_are_transient():
+    from urllib.error import URLError
+
+    class Down(FakeWeb):
+        def chat_postMessage(self, **kw):
+            raise URLError("connection reset")
+
+    with pytest.raises(TransientToolError):
+        SlackClient(client=Down()).post("C1", "x")

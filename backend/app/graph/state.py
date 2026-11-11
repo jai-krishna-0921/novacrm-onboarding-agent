@@ -23,6 +23,8 @@ class OnboardingState(TypedDict, total=False):
     provider_call_id: str
     call_result: dict           # CallResult.model_dump()
     last_call_rationale: str
+    retry_at: float | None      # epoch seconds; durable wait before the next call attempt
+    retry_since: float | None
     plan_tier: str
     tier_source: str            # "ae_call" | "human:<who>"
     project_id: str
@@ -44,6 +46,7 @@ class Deps:
     llm: LLM
     today: Callable[[], date] = date.today
     sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.time
     rules: dict[Tier, TierRule] = field(init=False)
 
     def __post_init__(self):

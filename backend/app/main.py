@@ -3,7 +3,9 @@
 import json
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,7 @@ from app.tools.registry import PermanentToolError
 
 log = logging.getLogger("onboarding")
 CURSOR = "gmail_history_id"
+RECONCILE_AFTER = 180  # seconds without a webhook before we ask Retell directly
 
 
 class Resolution(BaseModel):
@@ -41,23 +44,48 @@ def create_app(c: Container | None = None) -> FastAPI:
             return
         with lock:
             cursor = k.store.get_kv(CURSOR)
+
+            def relevant(e) -> bool:
+                # Deal-like subject OR any mail from a known AE (AEs don't always write "Closed Won").
+                return bool(DEAL_SUBJECT.search(e.subject)) or k.store.lookup_ae(e.sender) is not None
+
             if cursor is None:
                 k.store.set_kv(CURSOR, k.inbox.current_history_id())
                 return
             try:
-                # Deal-like subject OR any mail from a known AE (AEs don't always write "Closed Won").
-                emails, new_cursor = k.inbox.new_deal_emails(
-                    cursor, lambda e: bool(DEAL_SUBJECT.search(e.subject)) or k.store.lookup_ae(e.sender) is not None)
+                emails, new_cursor = k.inbox.new_deal_emails(cursor, relevant)
             except PermanentToolError as e:
-                if "history_too_old" in str(e):
-                    log.warning("gmail history cursor too old; resetting to now")
-                    k.store.set_kv(CURSOR, k.inbox.current_history_id())
-                    return
-                raise
+                if "history_too_old" not in str(e):
+                    raise
+                # Cursor expired: full-sync the recent inbox (runs dedupe by message id), then reset the cursor.
+                log.warning("gmail history cursor too old; falling back to a 2-day full sync")
+                new_cursor = k.inbox.current_history_id()
+                emails = k.inbox.recent_deal_emails(relevant)
             for e in emails:
                 run_id, _ = k.runner.start(e.model_dump())
                 log.info("deal email %s -> run %s", e.message_id, run_id)
             k.store.set_kv(CURSOR, new_cursor)
+
+    def tick(now: float | None = None) -> None:
+        """Scheduler: resume due retry waits; reconcile calls whose webhook never arrived (> RECONCILE_AFTER s)."""
+        k, now = container(), now if now is not None else time.time()
+        with lock:
+            for run in k.store.list_runs(500):
+                status = run.get("status")
+                if status == "AWAITING_RETRY":
+                    p = k.runner.pending(run["id"])
+                    if p and p.get("type") == "wait" and p["until"] <= now:
+                        k.runner.resume_wait(run["id"])
+                elif status == "AWAITING_CALL" and k.voice is not None:
+                    age = now - datetime.fromisoformat(run["updated_at"]).timestamp()
+                    p = k.runner.pending(run["id"])
+                    if age < RECONCILE_AFTER or not p or p.get("type") != "call":
+                        continue
+                    call = k.voice.get_call(p["provider_call_id"])
+                    done = call and (call.get("call_status") in ("not_connected", "error") or
+                                     (call.get("call_status") == "ended" and call.get("call_analysis")))
+                    if done:
+                        _resume_call_locked({"event": "call_analyzed", "call": call}, step="voice_reconcile")
 
     def poll_loop(seconds: int) -> None:
         while not stop.wait(seconds):
@@ -65,6 +93,13 @@ def create_app(c: Container | None = None) -> FastAPI:
                 sync_inbox()
             except Exception:  # noqa: BLE001 - keep polling; errors are logged
                 log.exception("inbox poll failed")
+
+    def tick_loop(seconds: int) -> None:
+        while not stop.wait(seconds):
+            try:
+                tick()
+            except Exception:  # noqa: BLE001
+                log.exception("scheduler tick failed")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -75,11 +110,14 @@ def create_app(c: Container | None = None) -> FastAPI:
         k = app.state.container
         if k.start_poller and k.inbox is not None:
             threading.Thread(target=poll_loop, args=(20,), daemon=True).start()
+        if k.start_poller:
+            threading.Thread(target=tick_loop, args=(5,), daemon=True).start()
         yield
         stop.set()
 
     app = FastAPI(title="NovaCRM onboarding agent", lifespan=lifespan)
     app.state.container = c
+    app.state.tick = tick
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"],
                        allow_headers=["*"])
 
@@ -95,32 +133,39 @@ def create_app(c: Container | None = None) -> FastAPI:
     async def voice_webhook(request: Request, bg: BackgroundTasks):
         k = container()
         raw = (await request.body()).decode()
-        if not verify_signature(raw, k.settings.retell_api_key, request.headers.get("x-retell-signature")):
+        key = k.settings.retell_api_key
+        if not key or not verify_signature(raw, key, request.headers.get("x-retell-signature")):
             raise HTTPException(401, "bad signature")
-        payload = json.loads(raw)
-        if payload.get("event") != "call_analyzed":
-            return Response(status_code=204)
-        call_id = payload["call"]["call_id"]
-        dedupe = f"webhook:call:{call_id}:call_analyzed"
-        if k.store.get_idem(dedupe) is not None:
-            return Response(status_code=204)
-        k.store.put_idem(dedupe, {"received": True})
+        try:
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("payload is not an object")
+            if payload.get("event") != "call_analyzed":
+                return Response(status_code=204)
+            map_call_analyzed(payload)  # validates call_id, metadata.run_id and field types
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            raise HTTPException(400, f"malformed webhook: {e}") from e
+        # No early dedupe marker: resume_call only acts if the run is waiting on exactly this call, so a
+        # redelivery after a failed resume still works and a duplicate after success is ignored.
         bg.add_task(resume_call, payload)
         return Response(status_code=204)
 
     def resume_call(payload: dict) -> None:
+        with lock:
+            _resume_call_locked(payload)
+
+    def _resume_call_locked(payload: dict, step: str = "voice_webhook") -> None:
         k = container()
         run_id, result = map_call_analyzed(payload)
-        with lock:
-            pending = k.runner.pending(run_id)
-            if not pending or pending.get("type") != "call" or pending.get("provider_call_id") != result.provider_call_id:
-                audit(k.store, run_id, "root", "voice_webhook",
-                      rationale=f"ignored result for {result.provider_call_id}: run is not waiting on that call",
-                      status="ignored")
-                return
-            audit(k.store, run_id, "root", "voice_webhook", rationale="call result received; resuming",
-                  output=result.model_dump(exclude={"transcript"}))
-            k.runner.resume_call(run_id, result.model_dump())
+        pending = k.runner.pending(run_id)
+        if not pending or pending.get("type") != "call" or pending.get("provider_call_id") != result.provider_call_id:
+            audit(k.store, run_id, "root", step,
+                  rationale=f"ignored result for {result.provider_call_id}: run is not waiting on that call",
+                  status="ignored")
+            return
+        audit(k.store, run_id, "root", step, rationale="call result received; resuming",
+              output=result.model_dump(exclude={"transcript"}))
+        k.runner.resume_call(run_id, result.model_dump())
 
     # ---------- dashboard API ----------
     @app.get("/healthz")

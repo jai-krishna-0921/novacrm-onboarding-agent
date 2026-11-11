@@ -39,6 +39,9 @@ class Runner:
     def resume_call(self, run_id: str, call_result: dict) -> dict:
         return self.invoke(run_id, Command(resume=call_result))
 
+    def resume_wait(self, run_id: str) -> dict:
+        return self.invoke(run_id, Command(resume={"type": "wake"}))
+
     def resolve(self, run_id: str, resolution: dict) -> dict:
         state = self.graph.get_state(self.cfg(run_id)).values
         pending = self.pending(run_id)

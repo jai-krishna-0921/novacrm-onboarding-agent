@@ -9,6 +9,7 @@ from app.config import Tier
 from app.graph.state import Deps, OnboardingState
 from app.guardrails.decision import CallOutcome, CallResult, decide_tier
 from app.guardrails.input import validate_deal
+from app.llm.client import LLMError
 from app.llm.schemas import DealFields, TranscriptReading
 from app.services.keys import customer_key, opportunity_key
 from app.tools.registry import ToolFailed
@@ -41,8 +42,11 @@ def build_intake(d: Deps):
         email = s["email"]
         user = (f"<email>\nFrom: {email['sender']}\nSubject: {email['subject']}\n\n"
                 f"{email['body']}\n</email>")
-        fields = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="extract_fields",
-                             prompt="extract_v1", user=user, schema=DealFields)
+        try:
+            fields = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="extract_fields",
+                                 prompt="extract_v1", user=user, schema=DealFields)
+        except LLMError as e:
+            return d.escalate(s, AGENT, f"Could not read the deal email (LLM unavailable): {e}", "system")
         rationale = "LLM structured extraction (email treated as untrusted data)"
         if m := OPP_RE.search(email["body"]):
             if fields.opportunity_id != m.group(1):
@@ -94,8 +98,6 @@ def build_intake(d: Deps):
 
     def place_call(s: OnboardingState) -> dict:
         attempt = s.get("call_attempts", 0) + 1
-        if attempt > 1:
-            d.sleep(d.settings.call_retry_delay_seconds)
         try:
             out = d.registry.call(AGENT, "voice_start_call", dict(
                 to_number=s["ae"]["phone"], ae_name=s["ae"]["name"],
@@ -121,9 +123,15 @@ def build_intake(d: Deps):
         result = CallResult.model_validate(s["call_result"])
         cross = None
         if result.status == "connected" and result.transcript.strip():
-            reading = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="interpret_call",
-                                  prompt="interpret_v1", user=f"<transcript>\n{result.transcript}\n</transcript>",
-                                  schema=TranscriptReading)
+            try:
+                reading = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="interpret_call",
+                                      prompt="interpret_v1", user=f"<transcript>\n{result.transcript}\n</transcript>",
+                                      schema=TranscriptReading)
+            except LLMError as e:
+                # The AE may well have confirmed; a human reviews the transcript and can set the tier.
+                return d.escalate(s, AGENT, f"Transcript cross-check unavailable ({e}); provider says "
+                                            f"tier={result.plan_tier}, confirmed={result.confirmed}. Review the "
+                                            f"call and set the tier.", "tier")
             cross = reading.plan_tier if reading.ae_confirmed else "unclear"
         decision = decide_tier(result, cross)
         d.audit(s, AGENT, "decide_tier", decision.rationale, status=decision.outcome.value,
@@ -136,7 +144,19 @@ def build_intake(d: Deps):
         if s["call_attempts"] >= d.settings.call_max_attempts:
             return d.escalate(s, AGENT, f"No clear plan tier after {s['call_attempts']} call attempts "
                                         f"(last: {decision.rationale})", "tier")
-        return {"last_call_rationale": decision.rationale}
+        delay = d.settings.call_retry_delay_seconds
+        if delay <= 0:
+            return {"last_call_rationale": decision.rationale}
+        now = d.clock()
+        return {"last_call_rationale": decision.rationale, "retry_at": now + delay, "retry_since": now,
+                **d.set_status(s, "AWAITING_RETRY")}
+
+    def wait_retry(s: OnboardingState) -> dict:
+        # Durable timer: pause until retry_at (a scheduler resumes us). Interrupt only, no side effects.
+        if s.get("retry_at"):
+            interrupt({"type": "wait", "since": s.get("retry_since"), "until": s["retry_at"],
+                       "attempt": s["call_attempts"]})
+        return {"retry_at": None}
 
     def check_duplicate(s: OnboardingState) -> dict:
         x = s["extracted"]
@@ -183,11 +203,11 @@ def build_intake(d: Deps):
 
     g = StateGraph(OnboardingState)
     for fn in (check_sender, extract_fields, validate, request_clarification, lookup_ae, place_call, await_call,
-               interpret_call, check_duplicate, create_project):
+               interpret_call, wait_retry, check_duplicate, create_project):
         g.add_node(fn.__name__, fn)
     g.add_conditional_edges(START, entry, ["check_sender", "extract_fields", "place_call", "check_duplicate"])
     g.add_conditional_edges("check_sender", lambda s: escalated(s) or "extract_fields", [END, "extract_fields"])
-    g.add_edge("extract_fields", "validate")
+    g.add_conditional_edges("extract_fields", lambda s: escalated(s) or "validate", [END, "validate"])
     g.add_conditional_edges("validate", lambda s: escalated(s) or (
         "request_clarification" if s["issues"] else "lookup_ae"),
         [END, "request_clarification", "lookup_ae"])
@@ -196,8 +216,9 @@ def build_intake(d: Deps):
     g.add_conditional_edges("place_call", lambda s: escalated(s) or "await_call", [END, "await_call"])
     g.add_edge("await_call", "interpret_call")
     g.add_conditional_edges("interpret_call", lambda s: escalated(s) or (
-        "check_duplicate" if s.get("plan_tier") else "place_call"),
-        [END, "check_duplicate", "place_call"])
+        "check_duplicate" if s.get("plan_tier") else "wait_retry"),
+        [END, "check_duplicate", "wait_retry"])
+    g.add_edge("wait_retry", "place_call")
     g.add_conditional_edges("check_duplicate", lambda s: escalated(s) or "create_project",
                             [END, "create_project"])
     g.add_edge("create_project", END)
