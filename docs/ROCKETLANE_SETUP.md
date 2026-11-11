@@ -105,3 +105,18 @@ Then run `uv run python -m scripts.rl_inspect`: the new templates show up under 
 
 ## Step 4: Clean-up before recording
 Archive or delete rehearsal projects, or use a fresh customer name for each take.
+
+## Status (built via browser automation, 2026-11-11)
+
+| Template | ID | Plan |
+|---|---|---|
+| NovaCRM Enterprise Onboarding (30 days) | `5000000115814` | 4 phases, 16 tasks, days 1–30 |
+| NovaCRM Growth Onboarding (14 days) | `5000000115815` | 4 phases, 11 tasks, days 1–14 |
+
+Both templates:
+- Tasks are assigned to **role placeholders**: Customer success = the tier's CSM; Project Manager = internal handoff review, Migration verified, Go-live sign-off; Customer = data export.
+- *Go-live checklist sign-off* **depends on** *Migration verified (validation checks passed)*.
+
+Remaining:
+1. Overdue automations (1 day → PM, 4 days → Owner).
+2. Placeholder → user mapping at project creation (code).
