@@ -7,9 +7,9 @@ A "deal closed" email arrives in Gmail. **Agent 1 (Intake & Routing)** extracts 
 ## Design rules
 1. Customer Success owns the process (templates, durations, owners). Tier → template mapping is config, never prompt text.
 2. The LLM reads unstructured input (email, call transcript) and drafts text. **Code makes every decision.**
-3. **No confirmed tier, no project.** Unclear or no answer → retry (max 3) → human escalation. A tier is never defaulted.
+3. **No confirmed tier, no project.** Unclear or no answer → retry (max 3) → human escalation.
 4. Every external action goes through one tool registry: per-agent allowlist, input validation, idempotency keys, retry, audit.
-5. Anything ambiguous goes to a human escalation queue. Missing fields → reply to the AE, never guess.
+5. Anything ambiguous goes to a human escalation queue. Missing fields → reply to the AE.
 
 ## Architecture
 ```

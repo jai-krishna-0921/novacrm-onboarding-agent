@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.auth import Auth
 from app.config import Settings
 from app.container import Container
 from app.guardrails.decision import CallResult
@@ -194,6 +195,9 @@ def create_app(c: Container | None = None) -> FastAPI:
     app.state.tick = tick
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"],
                        allow_headers=["*"])
+    auth = Auth(lambda: container().settings)
+    app.middleware("http")(auth.guard)  # login + same-origin check on everything but webhooks/healthz/login
+    app.include_router(auth.router(lambda: FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-cache"})))
 
     # ---------- webhooks ----------
     @app.post("/webhooks/gmail")
@@ -340,10 +344,10 @@ def create_app(c: Container | None = None) -> FastAPI:
             raise HTTPException(400, "gmail not configured (PROVIDER_MODE=fake)")
         return k.inbox.watch(k.settings.gmail_pubsub_topic)
 
-    # ---------- dashboard UI (static, same-origin; Caddy basic auth covers it in production) ----------
+    # ---------- dashboard UI (static, same-origin; the login guard in app/auth.py covers it) ----------
     @app.get("/ui", include_in_schema=False)
     def ui():
-        return FileResponse(STATIC / "index.html")
+        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
     @app.get("/ui/config", include_in_schema=False)
     def ui_config():

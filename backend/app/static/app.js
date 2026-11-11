@@ -61,6 +61,7 @@ async function api(path, opts = {}) {
     init.body = JSON.stringify(opts.body);
   }
   const r = await fetch(path, init);
+  if (r.status === 401) { toLogin(); throw Object.assign(new Error("Signed out"), { status: 401 }); }
   let data = null;
   try { data = await r.json(); } catch (_) { /* non-JSON body */ }
   if (!r.ok) {
@@ -71,6 +72,11 @@ async function api(path, opts = {}) {
     throw e;
   }
   return data;
+}
+
+// Session missing or expired: go to the login page and come back to this exact view afterwards.
+function toLogin() {
+  location.assign(`/ui/login?next=${enc(`/ui${location.hash}`)}`);
 }
 
 function fmtTime(iso, withDate) {
@@ -98,7 +104,7 @@ const json = (v) => el("pre", {}, typeof v === "string" ? v : JSON.stringify(v, 
 const errorBox = (e) => el("div", { class: "error", role: "alert" }, e.message || String(e));
 const chip = (text, tone) => el("span", { class: `chip ${tone || ""}` }, text);
 const tierChip = (t) => (t ? el("span", { class: `tier ${String(t).toLowerCase()}` }, t) : null);
-const enc = encodeURIComponent;
+function enc(s) { return encodeURIComponent(s); }
 // replaceChildren() would print null/false as text; drop them (and flatten arrays) first.
 const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false));
 
@@ -423,6 +429,7 @@ function navigate() {
   if (view.name === "escalations" && view.id) drawerBack = drawerOnly && !prev.id;
   transition = drawerOnly || !prev ? null : view.name === "run" ? "fwd" : prev.name === "run" ? "back" : "fwd";
   if (!drawerOnly) ui = null;
+  setTitle();
   document.querySelectorAll("[data-nav]").forEach((a) => {
     const on = a.dataset.nav === (view.name === "escalations" ? "escalations" : "runs");
     a.classList.toggle("active", on);
@@ -430,6 +437,17 @@ function navigate() {
   });
   if (!prev) app.replaceChildren(el("div", { class: "rows" }, [0, 1, 2, 3].map(() => el("div", { class: "skel" }))));
   refresh(true);
+}
+
+const TITLES = { runs: "Onboarding runs", escalations: "Needs a human", run: "Run details" };
+
+function setTitle() {
+  const title = TITLES[view.name] || "";
+  document.getElementById("page-title").textContent = title;
+  document.title = `${title} | NovaCRM Onboarding`;
+  const crumb = document.getElementById("crumb");
+  crumb.hidden = view.name !== "run";
+  crumb.textContent = backTo === "#/escalations" ? "‹ Needs a human" : "‹ Runs";
 }
 
 function goBack() {
@@ -525,8 +543,7 @@ function renderRuns(runs, escs) {
     ui.pager = pager("runs", (d) => { ui.page = turn(ui.page, d); applyFilter(); });
     app.replaceChildren(
       el("div", { class: "page-head" },
-        el("div", {}, el("h1", {}, "Onboarding runs"),
-          el("p", {}, "Each closed-won deal email starts a run. Open one to follow it step by step.")),
+        el("p", {}, "Each closed-won deal email starts a run. Open one to follow it step by step."),
         ui.seg),
       el("div", { class: "list-panel" },
         el("div", { class: "list-head", "aria-hidden": "true" },
@@ -622,11 +639,8 @@ function renderEscalations(runs, escs) {
     ui.scrim = el("div", { class: "scrim", onclick: closeDrawer });
     ui.drawer = el("aside", { class: "drawer", "aria-label": "Escalation", tabindex: "-1" });
     app.replaceChildren(
-      el("button", { class: "btn ghost back", type: "button", onclick: () => { location.hash = "#/runs"; } },
-        el("span", { class: "arrow", "aria-hidden": "true" }, "←"), "All runs"),
       el("div", { class: "page-head" },
-        el("div", {}, el("h1", {}, "Needs a human"),
-          el("p", {}, "The agent never guesses. When something is unclear it stops and waits here. Open one to decide."))),
+        el("p", {}, "Runs waiting for a decision. Open one to resolve it.")),
       ui.list, ui.pager.root, ui.scrim, ui.drawer);
   }
   ui.last = { byId, sorted };
@@ -706,13 +720,9 @@ function renderDrawer(byId, escs) {
 // ---------- run detail ----------
 function notFound() {
   ui = null;
-  app.replaceChildren(backButton(), el("div", { class: "panel empty" }, el("strong", {}, "Run not found"),
-    "It may have been removed, or the link is wrong."));
-}
-
-function backButton() {
-  return el("button", { class: "btn ghost back", type: "button", onclick: goBack },
-    el("span", { class: "arrow", "aria-hidden": "true" }, "←"), backTo === "#/escalations" ? "Back to inbox" : "Back to runs");
+  app.replaceChildren(el("div", { class: "panel empty" }, el("strong", {}, "Run not found"),
+    "It may have been removed, or the link is wrong.", el("div", { class: "actions center" },
+      el("a", { class: "btn", href: "#/runs" }, "Go to all runs"))));
 }
 
 const TABS = [{ value: "activity", label: "Activity" }, { value: "progress", label: "Project progress" },
@@ -754,7 +764,6 @@ function renderRun(data, escs) {
     ui.tabs.setAttribute("role", "tablist");
     show(tab);
     app.replaceChildren(
-      backButton(),
       ui.hero,
       el("section", { class: "panel" }, ui.stepper),
       ui.escalation,
@@ -785,7 +794,7 @@ function renderHero(run, info) {
   fill(ui.hero,
     el("div", { class: "hero-id" },
       el("div", { class: "card-top" }, statusChip(run, info), el("span", { class: "time" }, `Received ${fmtTime(run.created_at, true)}`)),
-      el("h1", {}, info.name),
+      el("h2", { class: "hero-name" }, info.name),
       el("div", { class: "hero-meta" },
         tierChip(info.tier),
         projectLink(run.rocketlane_project_id),
@@ -1083,11 +1092,41 @@ function renderBehind(run, data) {
   body.querySelectorAll("details").forEach((d, i) => { if (open[i]) d.open = true; });
 }
 
+// ---------- user menu ----------
+function setupUserMenu() {
+  const btn = document.getElementById("user-btn");
+  const menu = document.getElementById("user-menu");
+  const toggle = (open) => {
+    menu.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    if (open) menu.querySelector("button").focus();
+  };
+  btn.addEventListener("click", () => toggle(menu.hidden));
+  document.addEventListener("click", (e) => { if (!menu.hidden && !e.target.closest(".user")) toggle(false); });
+  menu.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); toggle(false); btn.focus(); } });
+  const out = document.getElementById("sign-out");
+  out.addEventListener("click", async () => {
+    out.disabled = true;
+    out.textContent = "Signing out…";
+    try { await fetch("/auth/logout", { method: "POST" }); } catch (_) { /* cookie expires anyway */ }
+    location.assign("/ui/login");
+  });
+  api("/auth/me").then((me) => {
+    const name = String((me && me.user) || "");
+    if (!name) return;
+    document.getElementById("user-name").textContent = name;
+    document.getElementById("menu-user").textContent = name;
+    document.getElementById("user-initial").textContent = name.charAt(0).toUpperCase();
+  }).catch(() => { /* a 401 already redirected */ });
+}
+
 // ---------- boot ----------
+setupUserMenu();
+document.getElementById("crumb").addEventListener("click", goBack);
 window.addEventListener("hashchange", navigate);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
 document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape" || !view) return;
+  if (e.key !== "Escape" || !view || !document.getElementById("user-menu").hidden) return;
   if (e.target instanceof HTMLElement && e.target.closest("input, textarea, select")) return;
   if (view.name === "run") goBack();
   else if (view.name === "escalations" && view.id) closeDrawer();

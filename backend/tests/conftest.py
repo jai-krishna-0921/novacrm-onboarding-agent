@@ -16,6 +16,7 @@ def settings() -> Settings:
         rocketlane_csm_growth="csm-pool@novacrm.example",
         call_max_attempts=3,
         call_retry_delay_seconds=0,
+        auth_disabled=True,  # the login guard has its own tests (test_auth.py) with it enabled
     )
 
 

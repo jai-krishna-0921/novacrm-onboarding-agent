@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_internal_member_ids: str = ""
 
+    # Dashboard/API login (app/auth.py). No password = every protected route answers 503 (fail closed).
+    admin_username: str = "admin"
+    admin_password: str = ""
+    session_secret: str = ""     # empty: random per process (sessions reset on restart)
+    trust_proxy: bool = False    # true only behind Caddy: client IP/scheme come from X-Forwarded-For/-Proto
+    auth_disabled: bool = False  # test suite only; ignored when PROVIDER_MODE=real
+
     @field_validator("retell_from_number", "demo_ae_phone")
     @classmethod
     def _e164(cls, v: str) -> str:

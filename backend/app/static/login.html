@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex">
+  <title>Sign in | NovaCRM Onboarding</title>
+  <link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/assets/app.css?v=10b">
+</head>
+<body class="login-page">
+  <main class="login">
+    <div class="login-brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-text"><b>NovaCRM Onboarding</b><small>Operations console</small></span>
+    </div>
+    <form id="login-form" class="login-card" novalidate>
+      <h1>Sign in</h1>
+      <p class="login-sub">Use your team account to follow onboarding runs and handle escalations.</p>
+      <div id="login-error" class="login-error" role="alert" hidden></div>
+      <label class="field" for="username">Username
+        <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+      </label>
+      <label class="field" for="password">Password
+        <span class="pw-wrap">
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button id="pw-toggle" class="pw-toggle" type="button" aria-controls="password" aria-pressed="false">Show</button>
+        </span>
+      </label>
+      <button id="login-submit" class="btn primary big login-submit" type="submit">
+        <span class="spinner" aria-hidden="true"></span><span class="label">Sign in</span>
+      </button>
+    </form>
+    <p class="login-foot">Access is limited to the customer success team. Sessions end after 12 hours.</p>
+  </main>
+  <script src="/ui/assets/login.js?v=10b"></script>
+</body>
+</html>

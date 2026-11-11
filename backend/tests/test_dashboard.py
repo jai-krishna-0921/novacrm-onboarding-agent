@@ -57,3 +57,9 @@ def test_ui_never_renders_api_data_as_html(settings):
     js = c.get("/ui/assets/app.js").text
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
         assert sink not in js, sink
+
+
+def test_html_pages_are_revalidated_so_asset_version_bumps_reach_browsers(settings):
+    c = client(settings)
+    for path in ("/ui", "/ui/login"):
+        assert c.get(path).headers.get("cache-control") == "no-cache", path

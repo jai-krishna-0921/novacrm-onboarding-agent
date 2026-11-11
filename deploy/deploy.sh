@@ -2,7 +2,8 @@
 # Ship the committed code + local .env to the EC2 host and (re)start the stack.
 # Usage: deploy/deploy.sh <ip>      (run deploy/aws_up.sh first)
 # The local .env is copied as-is (scp, never printed); the host's compose file overrides DATABASE_URL,
-# PUBLIC_BASE_URL and PROVIDER_MODE. Postgres and admin passwords are generated on the host on first deploy.
+# PUBLIC_BASE_URL and PROVIDER_MODE. The Postgres password is generated on the host on first deploy; the dashboard
+# login comes from ADMIN_USERNAME / ADMIN_PASSWORD in the local .env.
 set -euo pipefail
 IP="${1:?usage: deploy/deploy.sh <ip>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,12 +26,8 @@ cp src/deploy/docker-compose.prod.yml docker-compose.yml
 cp src/deploy/Caddyfile Caddyfile
 if [ ! -f .env ]; then
   umask 077
-  ADMIN_PW=$(openssl rand -base64 18 | tr -d '/+=')
-  HASH=$(docker run --rm caddy:2 caddy hash-password --plaintext "$ADMIN_PW")
-  printf "POSTGRES_PASSWORD=%s\nDOMAIN=%s\nADMIN_PASSWORD_HASH='%s'\n" \
-    "$(openssl rand -hex 24)" "$DOMAIN" "$HASH" > .env
-  echo "$ADMIN_PW" > admin-password
-  echo "generated postgres + admin passwords (admin password in /opt/novacrm/admin-password)"
+  printf "POSTGRES_PASSWORD=%s\nDOMAIN=%s\n" "$(openssl rand -hex 24)" "$DOMAIN" > .env
+  echo "generated postgres password"
 fi
 docker build -q -t novacrm-api:latest src/backend
 docker compose up -d --remove-orphans

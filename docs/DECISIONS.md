@@ -9,7 +9,7 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 | # | Decision | Why |
 |---|---|---|
 | P1 | **Code decides, the LLM only reads and drafts.** Tier choice, template mapping, duplicate detection, escalation, migration verdicts are plain code. | Deterministic, testable, auditable. The LLM is only used where text is unstructured (email, transcript) or must be written (welcome, handoff). |
-| P2 | **No confirmed tier, no project.** Unclear / no answer → retry (max 3) → human. Never a default tier. | The assignment's core guardrail, and the "mixed-up templates" pain. |
+| P2 | **No confirmed tier, no project.** Unclear / no answer → retry (max 3) → human. | The assignment's core guardrail, and the "mixed-up templates" pain. |
 | P3 | **CS owns the process.** Tier → template, duration, CSM model live in config (`TIER_RULES`), never in prompts. Templates, durations and owners live in Rocketlane. | CS can change the process without a code change or a prompt edit. |
 | P4 | **Every external action goes through one tool registry** (per-agent allowlist, pydantic validation, idempotency keys, retry, audit with masked phones). | One place to enforce and log side effects; agents can't call tools they don't own. |
 | P5 | **Anything ambiguous goes to a human escalation queue**, typed by kind (tier / input / duplicate / system / migration) with allowed resolutions per kind. | `set_tier` is only possible for tier escalations and never after a project exists. |
@@ -44,9 +44,9 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 |---|---|
 | Sender must be an **active AE in the Postgres AE directory**, checked before any LLM call or reply. | Strangers never trigger calls or replies. |
 | Sender must be **authenticated by Gmail**: `Authentication-Results` from `mx.google.com` only (top-most), `dmarc=pass` or aligned `dkim=pass`; SPF alone never counts. | A forged `From:` would otherwise make the system phone the AE and create real projects. Verified on real inbox mail. |
-| Required fields: customer name, contact email, AE, **Salesforce opportunity link** (`*.salesforce.com` / `*.force.com`, id `006…`). Missing / invalid / conflicting → threaded reply to the AE, nothing created. | "Ask, never guess." |
+| Required fields: customer name, contact email, AE, **Salesforce opportunity link** (`*.salesforce.com` / `*.force.com`, id `006…`). Missing / invalid / conflicting → threaded reply to the AE, nothing created. | The assignment asks for clarification instead of assumptions. |
 | One deal per email; auto-replies ignored; duplicates detected by normalised customer name + 15-char opportunity id, locally and in Rocketlane. | Edge cases from the assignment. |
-| Tier confirmed only if Retell's post-call analysis says enterprise/growth **and** the AE explicitly confirmed the read-back **and** an independent LLM transcript reading agrees. | A false "confirmed" is the worst failure; eval gate is 100 % on transcripts. |
+| Tier confirmed only if Retell's post-call analysis says enterprise/growth **and** the AE explicitly confirmed the read-back **and** an independent LLM transcript reading agrees. | A wrongly confirmed tier creates the wrong project; the transcript eval gate is 24/24 with 0 false confirmations. |
 
 ## 5. Voice (Retell AI)
 
@@ -88,7 +88,7 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 | OAuth desktop client, consent screen in **Testing** mode, scope `gmail.modify`, refresh token in `.env`; access tokens are minted in memory by the client library. | Simplest working auth. Testing-mode refresh tokens expire after 7 days → re-run `make gmail-auth`. |
 | CS inbox = the account's real address (not a `+alias`). | Google identifies the account, not the alias; it's also the From of our replies. |
 | **Push**: Gmail `users.watch` → Pub/Sub topic `gmail-deals` → push subscription → `POST /webhooks/gmail?token=…`. **20 s polling stays on** as a fallback; runs dedupe by message id. | Instant trigger without losing mail if a push is dropped. Watch expires after 7 days → `POST /admin/gmail/watch` (production: daily scheduler). |
-| `history.list` cursor in Postgres; 404 skips a message; `history_too_old` → 2-day full sync. | Robust sync. |
+| `history.list` cursor in Postgres; 404 skips a message; `history_too_old` → 2-day full sync. | Sync survives deleted messages and expired cursors. |
 
 ## 9. Data migration verification
 
@@ -103,7 +103,7 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 |---|---|
 | **AWS, personal account (profile `jk-personal`), one EC2 `t3.small`** (free-tier eligible) with Docker Compose: API + Postgres + Caddy. | User's free credits. ECS Fargate + RDS + ALB ≈ $40+/month; ngrok/cloudflared would break when the laptop sleeps. |
 | HTTPS via Caddy + Let's Encrypt on `<ip>.sslip.io`. | Retell and Pub/Sub need HTTPS; no domain purchase. |
-| **Everything except `/webhooks/*` and `/healthz` is behind HTTP basic auth** (Caddy). Webhooks authenticate themselves (Retell HMAC, Gmail push token). | `/runs` and `/resolve` expose customer data and can trigger actions. |
+| **Everything except `/webhooks/*`, `/healthz` and the login page is behind an in-app login** (`app/auth.py`: signed HttpOnly SameSite=Strict session cookie, 12 h; same-origin check on POSTs; 5 failed logins per IP per 5 min; fails closed without `ADMIN_PASSWORD`). Replaced Caddy basic auth (browser popup). Webhooks authenticate themselves (Retell HMAC, Gmail push token). | `/runs` and `/resolve` expose customer data and can trigger actions. |
 | Secrets: `.env` is copied to the host over SSH (`chmod 600`), never committed; Postgres and admin passwords are generated on the host. | No secrets in git or images. |
 | Logs: one JSON object per line, phones masked; request log in Caddy with the push token and auth headers redacted; uvicorn access log off. | The push token travels in the query string. |
 | Single uvicorn worker. | The Gmail poller and scheduler run in-process; more workers would duplicate them. |
@@ -127,7 +127,7 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 | Rules: phase complete → one customer-safe Slack line; import task complete → auto migration check; "Migration verified" ticked without a passing check → reopen + escalate; all Go-Live done and migration resolved → LLM handoff summary (fact-checked, static fallback) in the "Handoff to support" private note, run → `HANDED_OFF`. | Code decides; the LLM only writes the summary. The handoff is internal, never in the shared channel. |
 | Overdue escalation is **not** in Agent 3. | The assignment requires a native Rocketlane automation; duplicating it would double-notify. |
 | Tasks are read with `includeFields=phase` (phase is null otherwise); statuses To do=1, In progress=2, Completed=3. | Verified against the live API. |
-| **Dashboard** at `/ui`: plain HTML/CSS/JS served by FastAPI (no build step, no CDN), light theme, larger type, 7-step pipeline per run, paginated lists (5/10/25), side-panel escalation actions, tabs, polling every 3 s. Behind the same basic auth. Designed with the taste-skill guidance and beautifului.dev patterns. | Ships with the API on the same host; shown live in the demo while the call happens. Data is rendered with `textContent` only (emails/transcripts are untrusted). |
+| **Dashboard** at `/ui`: plain HTML/CSS/JS served by FastAPI (no build step, no CDN), light theme, larger type, 7-step pipeline per run, paginated lists (5/10/25), side-panel escalation actions, tabs, polling every 3 s. Behind the same in-app login (sidebar layout, user menu with sign out). Designed with the taste-skill guidance and beautifului.dev patterns. | Ships with the API on the same host; shown live in the demo while the call happens. Data is rendered with `textContent` only (emails/transcripts are untrusted). |
 
 ## 13. Idempotency (after the audit)
 

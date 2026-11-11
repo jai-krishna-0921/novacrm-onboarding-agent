@@ -6,21 +6,43 @@
   <meta name="color-scheme" content="light">
   <title>NovaCRM Onboarding</title>
   <link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/ui/assets/app.css?v=9b">
+  <link rel="stylesheet" href="/ui/assets/app.css?v=10b">
 </head>
-<body>
+<body class="shell">
   <a class="skip" href="#app">Skip to content</a>
-  <header class="top">
-    <div class="top-inner">
-      <a class="brand" href="#/runs"><span class="brand-mark" aria-hidden="true"></span>NovaCRM onboarding</a>
-      <nav aria-label="Main">
-        <a href="#/runs" data-nav="runs">Runs</a>
-        <a href="#/escalations" data-nav="escalations">Needs a human <span id="esc-count" class="count" hidden></span></a>
-      </nav>
+  <aside class="side">
+    <a class="brand" href="#/runs"><span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-text"><b>NovaCRM</b><small>Onboarding</small></span></a>
+    <nav class="side-nav" aria-label="Main">
+      <span class="side-label">Workspace</span>
+      <a href="#/runs" data-nav="runs">
+        <svg class="nav-ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h8"/></svg>
+        <span>Runs</span></a>
+      <a href="#/escalations" data-nav="escalations">
+        <svg class="nav-ic" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5 17 16H3z"/><path d="M10 8.5v3.2M10 13.8v.2"/></svg>
+        <span>Needs a human</span><span id="esc-count" class="count" hidden></span></a>
+    </nav>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div class="title-wrap">
+        <button id="crumb" class="crumb" type="button" hidden></button>
+        <h1 id="page-title">Runs</h1>
+      </div>
       <span id="live" class="live" role="status" title="Refreshes every 3 seconds">Connecting</span>
-    </div>
-  </header>
-  <main id="app" tabindex="-1"></main>
-  <script src="/ui/assets/app.js?v=9b"></script>
+      <div class="user">
+        <button id="user-btn" class="user-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu">
+          <span id="user-initial" class="avatar" aria-hidden="true">A</span><span id="user-name" class="user-name">admin</span>
+          <svg class="caret" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg>
+        </button>
+        <div id="user-menu" class="menu" role="menu" hidden>
+          <div class="menu-head">Signed in as <b id="menu-user">admin</b></div>
+          <button id="sign-out" type="button" role="menuitem">Sign out</button>
+        </div>
+      </div>
+    </header>
+    <main id="app" tabindex="-1"></main>
+  </div>
+  <script src="/ui/assets/app.js?v=10b"></script>
 </body>
 </html>

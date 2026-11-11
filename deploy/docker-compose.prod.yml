@@ -1,6 +1,7 @@
 # Production stack on one EC2 host: api + postgres + caddy (HTTPS). See deploy/README.md.
 # /opt/novacrm/app.env  = the app's .env (copied by deploy.sh, never committed)
-# /opt/novacrm/.env     = POSTGRES_PASSWORD, DOMAIN, ADMIN_PASSWORD_HASH (generated on the host, never committed)
+# /opt/novacrm/.env     = POSTGRES_PASSWORD, DOMAIN (generated on the host, never committed)
+# Dashboard login: ADMIN_USERNAME / ADMIN_PASSWORD / SESSION_SECRET in app.env (the app fails closed without a password).
 services:
   postgres:
     image: postgres:16
@@ -25,6 +26,7 @@ services:
       MIG_DEST_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@postgres:5432/mig_dest
       PUBLIC_BASE_URL: https://${DOMAIN:?}
       PROVIDER_MODE: real
+      TRUST_PROXY: "true"  # only Caddy reaches the api: client IP/scheme from X-Forwarded-For/-Proto
     depends_on:
       postgres: {condition: service_healthy}
 
@@ -34,7 +36,6 @@ services:
     ports: ["80:80", "443:443"]
     environment:
       DOMAIN: ${DOMAIN}
-      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

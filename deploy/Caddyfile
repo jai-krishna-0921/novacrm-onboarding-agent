@@ -10,20 +10,12 @@
 			}
 			request>headers>Authorization delete
 			request>headers>X-Retell-Signature delete
+			request>headers>Cookie delete
+			resp_headers>Set-Cookie delete
 		}
 	}
 
-	# Public: webhooks verify their own credentials (Retell HMAC signature, Gmail push token).
-	@public path /webhooks/* /healthz
-	handle @public {
-		reverse_proxy api:8000
-	}
-
-	# Everything else (runs, escalations, resolve, admin) needs the admin password.
-	handle {
-		basic_auth {
-			admin {$ADMIN_PASSWORD_HASH}
-		}
-		reverse_proxy api:8000
-	}
+	# The app enforces login itself (app/auth.py: session cookie, CSRF origin check, login rate limit).
+	# Webhooks verify their own credentials (Retell HMAC signature, Gmail push token).
+	reverse_proxy api:8000
 }
