@@ -131,8 +131,13 @@ sits under **Add conditions** ("When task becomes overdue by N days"; the action
 Placeholder → user mapping (code, done): `POST /projects` sends `placeholders`. Agent 1 fills **Project Manager** with
 `ROCKETLANE_PM_EMAIL`, **Customer success** with the tier's CSM, and **Customer** with the deal's customer contact. Names
 are resolved to IDs through `GET /placeholders` (verified live on 2026-11-11: Customer `5000000094570`, Customer success
-`5000000094572`, Project Manager `5000000094574`), and preflight checks that all three exist. Still UNVERIFIED: the
-`user` shape `{emailId}` in a live create. Confirm it on the first real project.
+`5000000094572`, Project Manager `5000000094574`), and preflight checks that all three exist. VERIFIED live on 2026-11-11
+(project 5000000262271): `user: {emailId}` works, and the template tasks came out assigned to the PM, the tier CSM and the
+customer contact.
+
+Migration evidence: `PUT /tasks/{id}` with only `taskPrivateNote` was VERIFIED live on the same project. The note was
+written, and the task's status, dates and assignees did not change. Template durations are working days: a 30-day
+template starting 11 Nov is due 22 Dec.
 
 Project Manager vs Project Owner:
 - **Project Owner** (`ROCKETLANE_OWNER_EMAIL`) is a built-in field on every project: the single accountable person, who
