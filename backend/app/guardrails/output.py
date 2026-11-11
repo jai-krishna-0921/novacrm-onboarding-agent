@@ -16,6 +16,8 @@ def check_welcome(text: str, customer_name: str, rule: TierRule) -> list[str]:
     problems: list[str] = []
     if customer_name.lower() not in text.lower():
         problems.append("missing customer name")
+    # The customer's own name ("Monday Labs", "14-Day Fitness") must not trip the fact checks below.
+    text = re.sub(re.escape(customer_name), " ", text, flags=re.I)
     durations = {int(d) for d in DURATION_RE.findall(text)}
     if durations != {rule.duration_days}:
         problems.append(f"duration must be exactly {rule.duration_days}-day, found {sorted(durations)}")

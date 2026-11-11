@@ -23,6 +23,15 @@ class Store(Protocol):
     def find_active_run(self, *, opportunity_id: str | None, customer_key: str,
                         exclude_run_id: str) -> dict | None: ...
     def upsert_escalation(self, key: str, row: dict) -> None: ...
+    def list_escalations(self, status: str | None = None) -> list[dict]: ...
+    def list_runs(self, limit: int = 100) -> list[dict]: ...
+    def list_audit(self, run_id: str) -> list[dict]: ...
+    def list_tool_calls(self, run_id: str) -> list[dict]: ...
+    def list_llm_calls(self, run_id: str) -> list[dict]: ...
+    def get_kv(self, key: str) -> str | None: ...
+    def set_kv(self, key: str, value: str) -> None: ...
+    def upsert_ae(self, email: str, name: str, phone: str, active: bool = True) -> None: ...
+    def lookup_ae(self, email: str) -> dict | None: ...
 
 
 class MemoryStore:
@@ -33,6 +42,9 @@ class MemoryStore:
         self.llm_calls: list[dict] = []
         self.runs: dict[str, dict] = {}
         self.escalations: dict[str, dict] = {}
+        self.kv: dict[str, str] = {}
+        self.aes: dict[str, dict] = {}
+        self._seq = 0
 
     def get_idem(self, key: str) -> dict | None:
         return self.idem.get(key)
@@ -50,7 +62,10 @@ class MemoryStore:
         self.llm_calls.append(row)
 
     def upsert_run(self, run_id: str, **fields: Any) -> None:
-        self.runs.setdefault(run_id, {"id": run_id, "created_at": now()}).update(fields, updated_at=now())
+        if run_id not in self.runs:
+            self._seq += 1
+            self.runs[run_id] = {"id": run_id, "created_at": now(), "_seq": self._seq}
+        self.runs[run_id].update(fields, updated_at=now())
 
     def get_run(self, run_id: str) -> dict | None:
         return self.runs.get(run_id)
@@ -72,3 +87,31 @@ class MemoryStore:
 
     def upsert_escalation(self, key: str, row: dict) -> None:
         self.escalations.setdefault(key, {"key": key, "created_at": now()}).update(row)
+
+    def list_escalations(self, status: str | None = None) -> list[dict]:
+        return [e for e in self.escalations.values() if status is None or e.get("status") == status]
+
+    def list_runs(self, limit: int = 100) -> list[dict]:
+        return sorted(self.runs.values(), key=lambda r: r["_seq"], reverse=True)[:limit]
+
+    def list_audit(self, run_id: str) -> list[dict]:
+        return [r for r in self.audit_rows if r["run_id"] == run_id]
+
+    def list_tool_calls(self, run_id: str) -> list[dict]:
+        return [r for r in self.tool_calls if r["run_id"] == run_id]
+
+    def list_llm_calls(self, run_id: str) -> list[dict]:
+        return [r for r in self.llm_calls if r["run_id"] == run_id]
+
+    def get_kv(self, key: str) -> str | None:
+        return self.kv.get(key)
+
+    def set_kv(self, key: str, value: str) -> None:
+        self.kv[key] = value
+
+    def upsert_ae(self, email: str, name: str, phone: str, active: bool = True) -> None:
+        e = email.strip().lower()
+        self.aes[e] = {"email": e, "name": name, "phone": phone, "active": active}
+
+    def lookup_ae(self, email: str) -> dict | None:
+        return self.aes.get(email.strip().lower())

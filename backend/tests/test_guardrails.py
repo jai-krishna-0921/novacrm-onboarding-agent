@@ -167,3 +167,18 @@ def test_channel_name_never_exceeds_80_chars():
 @pytest.mark.parametrize("raw,masked", [("+919876543210", "*********3210"), ("12", "**"), (None, None)])
 def test_phone_masking_keeps_last_four(raw, masked):
     assert mask_phone(raw) == masked
+
+
+@pytest.mark.parametrize("customer,tier", [("Monday Labs", Tier.GROWTH), ("14-Day Fitness Studios", Tier.ENTERPRISE),
+                                           ("March Analytics", Tier.ENTERPRISE), ("Pricing Partners LLC", Tier.GROWTH)])
+def test_customer_name_itself_never_trips_the_fact_checks(settings, customer, tier):
+    rule = tier_rules(settings)[tier]
+    text = (f"Welcome {customer}! Your {rule.duration_days}-day onboarding starts now with your {rule.csm_model} "
+            f"Customer Success Manager.")
+    assert check_welcome(text, customer, rule) == []
+
+
+def test_name_masking_does_not_hide_a_real_violation_elsewhere(settings):
+    rule = tier_rules(settings)[Tier.GROWTH]
+    text = "Welcome Monday Labs! Your 14-day onboarding with your pooled CSM starts Monday."
+    assert any("date" in p for p in check_welcome(text, "Monday Labs", rule))
