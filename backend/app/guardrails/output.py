@@ -1,3 +1,4 @@
+import json
 import re
 import unicodedata
 
@@ -38,3 +39,69 @@ def channel_name(customer_name: str, tier: Tier) -> str:
     prefix = "onboarding-"
     slug = slug[: 80 - len(prefix) - len(suffix)].rstrip("-")
     return f"{prefix}{slug}{suffix}"
+
+
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+|<@[A-Z0-9]+>")
+ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+NAME_PAIR_RE = re.compile(r"\b([A-Z][a-z]+)\s+((?:Ma?c|O'|De|Van)?[A-Z][a-z]+)\b")  # McArthur, O'Neil
+# Capitalised words a handoff legitimately uses; a "Firstname Lastname" pair of other words is treated as a person.
+HANDOFF_VOCAB = {"novacrm", "the", "this", "all", "data", "migration", "go", "live", "customer", "success", "manager",
+                 "support", "team", "enterprise", "growth", "kickoff", "configuration", "phase", "phases",
+                 "onboarding", "handoff", "summary", "next", "project", "csm", "rocketlane", "checks", "check",
+                 "verified", "verification", "result", "watch", "note", "tasks", "task", "dedicated", "pooled",
+                 "plan", "they", "their", "it", "its", "no", "one", "both", "every", "support's", "go-live"}
+
+
+def check_handoff(text: str, facts: dict) -> list[str]:
+    """Deterministic fact checks on the LLM-drafted handoff summary (no invented dates, prices or people)."""
+    problems: list[str] = []
+    low = text.lower()
+    customer = facts["customer_name"]
+    if customer.lower() not in low:
+        problems.append("missing customer name")
+    if facts["plan"].lower() not in low:
+        problems.append(f"missing tier '{facts['plan']}'")
+    result = facts["migration"]["result"]
+    if "migration" not in low or result.lower() not in low:
+        problems.append(f"must state the migration result '{result}'")
+    if len(text.split()) > 250:
+        problems.append("too long")
+    # Mask everything that came from the data before looking for invented specifics.
+    corpus = [customer, *(t["name"] for p in facts["phases"] for t in p["tasks"]),
+              facts["migration"].get("csm_note") or ""]
+    masked = text
+    for s in sorted(filter(None, corpus), key=len, reverse=True):
+        masked = re.sub(re.escape(s), " ", masked, flags=re.I)
+    # Any date that appears anywhere in the input data (task due dates, the migration check time) may be cited.
+    # (no trailing \b: timestamps like 2026-11-20T10:00 carry their date too)
+    allowed_dates = set(re.findall(r"\d{4}-\d{2}-\d{2}", json.dumps(facts, default=str)))
+    if bad := sorted(set(ISO_DATE_RE.findall(masked)) - allowed_dates):
+        problems.append(f"dates not in the data: {bad}")
+    if DATE_RE.search(ISO_DATE_RE.sub(" ", masked)):
+        problems.append("mentions a date or day not written as a YYYY-MM-DD date from the data")
+    if PRICE_RE.search(masked):
+        problems.append("mentions a price")
+    if EMAIL_RE.search(masked):
+        problems.append("mentions an email address or user")
+    all_done = all(t["completed"] for p in facts["phases"] for t in p["tasks"])
+    if not all_done and re.search(r"\ball (four |4 )?phases\b", masked, re.I):
+        problems.append("claims all phases are complete, but some tasks are open")
+    # Contradictions: another migration outcome or the other tier stated outside the quoted data.
+    others = {"passed": ["failed", "not run", "accepted by csm"]}.get(result, ["passed"])
+    negated = re.sub(r"\b(no|zero|0|none)\s+(\w+\s+)?failed\b|\bnone failed\b", " ", masked, flags=re.I)
+    if said := [w for w in others if re.search(rf"\b{w}\b", negated, re.I)]:
+        problems.append(f"migration result is '{result}' but the text also says {said}")
+    other_tier = {"enterprise": "growth", "growth": "enterprise"}.get(facts["plan"].lower())
+    if other_tier and re.search(rf"\b{other_tier}\b", masked, re.I):
+        problems.append(f"tier is {facts['plan']}, but the text mentions {other_tier}")
+    durations = {int(d) for d in DURATION_RE.findall(masked)}
+    if durations - {facts["duration_days"]}:
+        problems.append(f"duration must be {facts['duration_days']}-day, found {sorted(durations)}")
+    other = "pooled" if facts["csm_model"] == "dedicated" else "dedicated"
+    if other in masked.lower():
+        problems.append(f"CSM model is '{facts['csm_model']}', not '{other}'")
+    people = [f"{a} {b}" for a, b in NAME_PAIR_RE.findall(masked)
+              if a.lower() not in HANDOFF_VOCAB and b.lower() not in HANDOFF_VOCAB]
+    if people:
+        problems.append(f"names people not in the data: {people}")
+    return problems

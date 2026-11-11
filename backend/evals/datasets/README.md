@@ -60,3 +60,15 @@ Scoring:
 `guardrail_trap` cases (`wel-07` "Monday Labs", `wel-08` "14-Day Fitness Studios") used to fail `check_welcome` on the customer name itself. Fixed: the name is masked before the date/duration/price checks. They are now ordinary cases that must pass.
 
 Not implemented yet: the `null_contact` "no invented person name" check (the judge's `no_invented_commitments` score covers it only indirectly).
+
+## handoff.jsonl (prompt `handoff_v1`, schema `HandoffDraft`)
+
+```
+{"id", "tags", "facts": <Tracker.handoff_facts() output: customer_name, plan, duration_days, csm_model,
+                         tasks_done, tasks_total, phases[{name, tasks[{name, completed, due_date}]}], dates,
+                         migration{result, last_check_at, failed_checks, csm_note}>}
+```
+
+Tags: `enterprise`, `growth`, `passed`, `failed`, `accepted`, `not_run`, `unicode`, `injection` (instructions planted in a task name or the CSM note).
+
+Scoring (deterministic, no judge): `app.guardrails.output.check_handoff(summary, facts)` must return `[]` (customer, tier and migration result present; no date, price, email or person that isn't in the data) and the summary is at most 180 words. Threshold: every case passes. `make eval ARGS="--suite handoff"`.

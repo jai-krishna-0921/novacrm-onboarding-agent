@@ -1,0 +1,106 @@
+# Issue log
+
+Every defect found while building the system: how it was found, its severity and its status. Each fixed issue has
+a regression test (named where useful). Decisions live in `DECISIONS.md`; this file is about things that went wrong.
+
+Legend: **Fixed** · **Open** (known, accepted for now) · **In progress**.
+Sources: TR = tester subagent review, LIVE = first real end-to-end run, EVAL = real-Claude eval run,
+AUDIT = idempotency/concurrency audit, API = check against the live Rocketlane/Retell API.
+
+## Intake and workflow
+
+| # | Issue | Sev | Found | Status / fix |
+|---|---|---|---|---|
+| 1 | Human `set_tier` resolution bypassed guardrails (could set a tier after a project existed) | High | TR1 | Fixed: escalation kinds with allowed resolutions; `set_tier` only for tier escalations, never after a project. |
+| 2 | A stale call result (older attempt) was accepted as the answer | High | TR1 | Fixed: the call result must match the current attempt's call id. |
+| 3 | Timeout after `POST /projects` re-POSTed blind → possible duplicate project | Critical | TR1 | Fixed: `AmbiguousToolError` → look the project up first. |
+| 4 | Duplicate detection compared raw customer names | Medium | TR1 | Fixed: normalised customer key + 15-char Salesforce id. |
+| 5 | Unhandled errors left runs stuck in a non-terminal state | High | TR1 | Fixed: Runner marks the run FAILED. |
+| 6 | `lookup_ae` crashed on a tool failure | Medium | TR1 | Fixed: escalates (system). |
+| 7 | Welcome check missed dates and "Rs." prices | Medium | TR1 | Fixed. |
+| 8 | Customer names like "Monday Labs" / "14-Day Fitness" tripped the welcome check | Medium | TR1 | Fixed: customer name masked before checks. |
+| 9 | Date regex false positives ("decisions", "24/7") | Low | TR1 | Fixed. |
+| 10 | Gateway 5xx / transport errors on writes treated as safe to retry | High | TR2 | Fixed: ambiguous on writes. |
+| 11 | Gmail 404 on a deleted message aborted the whole sync | Medium | TR2 | Fixed: skip it; `history_too_old` → 2-day full sync. |
+| 12 | Auto-replies could start runs | Medium | TR2 | Fixed: filtered. |
+| 13 | Empty Retell key or malformed webhook accepted | High | TR2 | Fixed: 401 / 400. |
+| 14 | LLM outage crashed the run | High | TR2 | Fixed: intake escalates; welcome falls back to a static template. |
+| 15 | Retry wait used `sleep()` while holding the lock | Medium | TR2 | Fixed: durable wait + scheduler `tick()`. |
+| 16 | Lost Retell webhook left the run waiting forever | High | TR2 | Fixed: reconcile via get-call after 180 s; 900 s ceiling counts as failed. |
+| 17 | One failing run in `tick()` stopped the others; Retell polled while holding the lock | Medium | TR3 | Fixed. |
+| 18 | Failed lookup after an ambiguous create re-POSTed the project | Critical | TR4 | Fixed: any lookup failure → permanent "verify in Rocketlane". |
+| 19 | Empty PM email left the Project Manager placeholder unfilled silently | Medium | TR4 | Fixed: audit warning. |
+| 20 | Escalation text said "API unavailable" for every create failure | Low | TR4 | Fixed. |
+
+## Security
+
+| # | Issue | Sev | Found | Status / fix |
+|---|---|---|---|---|
+| 21 | Anyone could forge `From: <AE>` and trigger a real call + project | Critical | Review of the deployed system | Fixed: Gmail `Authentication-Results` (mx.google.com only) must show dmarc=pass or aligned dkim=pass. Verified on real inbox mail. |
+| 22 | `/runs`, `/escalations`, `/resolve`, `/admin` were public once deployed | Critical | Pre-deploy review | Fixed: Caddy basic auth on everything except `/webhooks/*` and `/healthz`. |
+| 23 | Gmail push token appeared in plain text in access logs | Medium | LIVE | Fixed: uvicorn access log off; Caddy request log redacts it. |
+| 24 | Two different Salesforce links in one email silently used the first | Medium | TR (sender-auth review) | Fixed: clarification. |
+| 25 | HTML-only emails lost the Salesforce link | Medium | TR (sender-auth review) | Fixed. |
+
+## Integrations (found against the live APIs)
+
+| # | Issue | Sev | Found | Status / fix |
+|---|---|---|---|---|
+| 26 | Rocketlane: `GET /projects/placeholders` returns 400; ids are at `GET /placeholders` | — | API | Fixed: resolve names via `/placeholders`. |
+| 27 | Gmail push subscription created with an empty token (`.env` placeholder comment parsed as a value) → all pushes 401 | High | LIVE | Fixed: real token, subscription updated; first push 200. |
+| 28 | First real call failed: `RETELL_FROM_NUMBER` had a hyphen (`+1510822-8650`) → Retell 404 | High | LIVE | Fixed: phone settings normalised to E.164 (test). |
+| 29 | Retell agent never published and number not bound to it | High | LIVE | Fixed: `make retell-setup` publishes and binds; India allowed. |
+| 30 | Retell agent spoke too fast for the AE | Medium | LIVE (user) | Fixed: voice speed 0.8, slower prompt, repeat on request. |
+| 31 | `retell-setup` couldn't update a published agent (versions immutable, engine can't be swapped) | Medium | LIVE | Fixed: new draft version, edit its LLM in place, publish. |
+| 32 | Rocketlane task list returns `phase: null` unless `includeFields=phase` → tracking would never see a phase complete | High | API | Fixed (test). |
+| 33 | Slack Connect unavailable on the free workspace | — | Design | Accepted: degrades to an internal channel with an audit note. |
+
+## LLM quality (real-Claude evals)
+
+| # | Issue | Sev | Found | Status / fix |
+|---|---|---|---|---|
+| 34 | Extraction "repaired" a malformed email (`dana at acme dot com`) instead of copying it | Medium | EVAL | Fixed: `extract_v2`. 26/26. |
+| 35 | Extraction echoed prompt-injection text into `notes` | Medium | EVAL | Fixed: `extract_v2`. |
+| 36 | Extraction used a no-reply From header as the AE | Low | EVAL | Fixed: `extract_v2`. |
+| 37 | Welcome eval judge scored the approved phases as "invented" (0/8) | — | EVAL | Fixed (eval bug): judge gets the approved template content. 8/8. |
+| 38 | Welcome didn't name the plan | Low | EVAL | Fixed: `welcome_v2`. |
+| 39 | Handoff check flagged dates that were in the data | Medium | EVAL | Fixed: any date in the input may be cited. |
+| 40 | Handoff check flagged "no failed checks" as a contradiction | Low | EVAL | Fixed: negations allowed (test). |
+| 41 | Handoff person-name check is heuristic (single first names not caught); 2 known false positives | Low | TR (tracking) | Open: costs one redraft, then the static template. |
+
+## Tracking (Agent 3)
+
+| # | Issue | Sev | Found | Status / fix |
+|---|---|---|---|---|
+| 42 | Handoff could happen while migration was unverified | High | TR (tracking) | Fixed. |
+| 43 | Five medium defects (double posts, reopen flapping, status regressions) | Medium | TR (tracking) | Fixed. |
+| 44 | Lock held while the handoff is drafted (up to two LLM calls can delay webhooks) | Low | TR (tracking) | Open. |
+
+## Idempotency and concurrency (audit, 2026-11-12)
+
+Root cause: idempotency keys were recorded **after** a side effect succeeded, and post-send timeouts were retried
+as transient for Retell, Slack and Gmail.
+
+| # | Issue | Sev | Status |
+|---|---|---|---|
+| 45 | Worker dies mid-create + redelivered call webhook → second Rocketlane project | Critical | Fixed: key reserved in-flight before every side effect; Rocketlane create reconciles by externalReferenceId; webhook guard also requires `AWAITING_CALL`. |
+| 46 | Retell create-call timeout re-dials the AE; restart re-runs an accepted call | High | Fixed: Retell idempotency key per (run, attempt), re-sent only within 50 min; read timeout = ambiguous. |
+| 47 | Run killed mid-node is never recovered or escalated | High | Fixed: `tick()` escalates runs stuck mid-step (`STUCK_RUN_MINUTES`, default 10); retry resumes from the checkpoint. |
+| 48 | Slack welcome re-posted after a timeout; channel created but response lost → `name_taken` forever | Medium | Fixed: channel reconciled by name (only if created by our bot); history checked before re-posting. |
+| 49 | Resent deal email for an onboarded opportunity still phones the AE (duplicate check after the call) | Medium | Fixed: `precheck_duplicate` before the call (post-call check kept). |
+| 50 | Gmail clarification re-sent after a send timeout / crash | Medium | Fixed: deterministic Message-ID per run; sent mail searched before re-sending. |
+| 51 | Migration-check double click runs two batches | Low | Fixed: identical check within 60 s returns the first result. |
+| 52 | Every guarantee assumes one process (`--workers 1`); multi-worker needs a DB lock | — | Open (documented) |
+
+## Operations
+
+| # | Issue | Sev | Status |
+|---|---|---|---|
+| 53 | Gmail watch expires after 7 days and isn't renewed automatically | Medium | Open: `POST /admin/gmail/watch` before ~18 Nov; production would schedule it daily. |
+| 54 | Gmail refresh token expires after 7 days (consent screen in Testing mode) | Medium | Open: re-run `make gmail-auth`, or publish the consent screen. |
+| 55 | Test suite slightly over the 10 s budget (~11 s) | Low | Open. |
+| 56 | Slack re-post check needs the `channels:history` scope; without it an interrupted post escalates instead of re-posting | Low | Open: add the scope to the Slack app and reinstall. |
+| 57 | Retell idempotency key and Gmail Message-ID reconcile are documented but not yet exercised live | Low | Open: only matters after a crash or timeout mid-send. |
+| 58 | Rocketlane search lag: a crash seconds after a create may not find the new project on restart | Low | Open: escalates as "verify in Rocketlane". |
+| 59 | A human "retry" after an unknown call outcome places a new call (escalation text warns) | Low | Accepted. |
+| 60 | ~35 pre-existing mypy errors (`make lint`) | Low | Open: ruff is clean; mypy errors are typing-only. |

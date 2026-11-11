@@ -9,7 +9,7 @@ import httpx
 
 from app.guardrails.decision import CallResult
 from app.tools.definitions import VoiceStartIn, VoiceStartOut
-from app.tools.registry import PermanentToolError, TransientToolError
+from app.tools.registry import AmbiguousToolError, PermanentToolError, TransientToolError
 
 RETELL_BASE = "https://api.retellai.com"
 _SIG = re.compile(r"^v=(\d+),d=([0-9a-f]+)$")
@@ -69,12 +69,16 @@ class RetellVoice:
         body = {"from_number": self.from_number, "to_number": a.to_number, "override_agent_id": self.agent_id,
                 "metadata": {"run_id": a.run_id, "attempt": a.attempt},
                 "retell_llm_dynamic_variables": {"ae_name": a.ae_name, "customer_name": a.customer_name}}
+        if a.idempotency_key:
+            # Retell replays the original response (same call_id) for 1 hour instead of dialling again.
+            body["idempotency_key"] = a.idempotency_key
         try:
             r = self.http.post("/v2/create-phone-call", json=body)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+            raise TransientToolError(f"connect error: {e}") from e  # request never sent
         except httpx.TransportError as e:
-            # Unlike a project, a duplicated call attempt is bounded by max attempts, and a result for an
-            # untracked call is ignored by the stale-call guard.
-            raise TransientToolError(f"{type(e).__name__}: {e}") from e
+            # Read timeout / reset after the request went out: the AE's phone may already be ringing.
+            raise AmbiguousToolError(f"{type(e).__name__} after sending create-phone-call") from e
         if r.status_code in (409, 429) or r.status_code >= 500:  # 409: new-number outbound hold
             raise TransientToolError(f"retell {r.status_code}: {r.text[:200]}")
         if r.status_code >= 400:

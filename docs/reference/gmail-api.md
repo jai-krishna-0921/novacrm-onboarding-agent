@@ -223,3 +223,10 @@ Source: https://developers.google.com/workspace/gmail/api/release-notes, plus th
 - Testing-mode 7-day refresh-token expiry: **still in force**.
 - No 2025–2026 changes to watch, history, the push payload or threading were found.
 - Consumer Gmail is deprecating Gmailify/POP and third-party "Send as" (Jan 2027). This doesn't affect the API.
+
+## Resend detection (UNVERIFIED)
+
+The clarification reply sets a deterministic `Message-ID` (`<clarify-{run_id}@{cs domain}>`). After an ambiguous send
+(timeout / 5xx) or a crash, `GmailClient.find_sent` searches `in:sent rfc822msgid:<id>` before sending again.
+UNVERIFIED: that Gmail keeps a client-supplied `Message-ID` on `messages.send` and that `rfc822msgid:` finds a
+just-sent message without indexing delay. If either fails, the lookup returns nothing and a later retry resends.

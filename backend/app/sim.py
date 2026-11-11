@@ -12,7 +12,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.config import Settings
 from app.graph.root import build_graph
 from app.graph.state import Deps
-from app.llm.schemas import DealFields, TranscriptReading, WelcomeDraft
+from app.llm.client import LLMError
+from app.llm.schemas import DealFields, HandoffDraft, TranscriptReading, WelcomeDraft
 from app.providers.fake import FakeWorld
 from app.services.runner import Runner
 from app.services.store import MemoryStore, now
@@ -23,8 +24,9 @@ class FakeLLM:
     """Scripted structured outputs. Default transcript reading uses only the AE's own lines."""
 
     def __init__(self, fields: DealFields, reading: TranscriptReading | None = None,
-                 welcome: str | None = None):
+                 welcome: str | None = None, handoff: list | None = None):
         self.fields, self.reading, self.welcome = fields, reading, welcome
+        self.handoff = handoff  # scripted handoff drafts (str, or an Exception to raise), consumed in order
         self.calls: dict[str, int] = {}
         self.store = None
 
@@ -46,6 +48,20 @@ class FakeLLM:
                 f"Welcome to NovaCRM, {f['customer_name']}! Your {f['duration_days']}-day onboarding starts now "
                 f"with your {f['csm_model']} Customer Success Manager: Kickoff, Data Migration, "
                 f"Configuration and Go-Live. Next up: scheduling the kickoff call."))
+        if schema is HandoffDraft:
+            if self.handoff:
+                nxt = self.handoff.pop(0)
+                if isinstance(nxt, Exception):
+                    raise nxt
+                return HandoffDraft(summary=nxt)
+            if self.handoff is not None:
+                raise LLMError("draft_handoff: no scripted draft left")
+            f = json.loads(user.split("\n", 1)[1].rsplit("\n", 1)[0])
+            m = f["migration"]
+            return HandoffDraft(summary=(
+                f"{f['customer_name']} finished the {f['plan']} plan ({f['duration_days']}-day onboarding, "
+                f"{f['csm_model']} CSM). All four phases are complete with {f['tasks_done']} of {f['tasks_total']} "
+                f"tasks done. Data migration check: {m['result']}. Support should watch the first weeks of usage."))
         raise AssertionError(f"FakeLLM has no script for {schema}")
 
 

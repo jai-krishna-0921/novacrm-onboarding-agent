@@ -96,3 +96,90 @@ def test_phone_numbers_are_masked_in_logs(store):
     make(store, Counter()).call("intake", "echo", {"text": "hi", "phone": "+919876543210"}, run_id="r1")
     logged = str(store.tool_calls) + str(store.audit_rows)
     assert "+919876543210" not in logged and "3210" in logged
+
+
+# ---- in-flight reservations (crash or ambiguous timeout between the side effect and the record) ----
+
+def test_key_is_reserved_before_the_provider_is_called(store):
+    seen = []
+
+    def fn(a):
+        seen.append(store.reserve_idem("k"))
+        return EchoOut(text="x")
+    make(store, fn).call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k")
+    assert seen[0] and "started_at" in seen[0]
+
+
+def test_in_flight_key_without_reconcile_escalates_once_instead_of_repeating(store):
+    fn = Counter()
+    store.reserve_idem("k")                                         # a previous worker died mid-call
+    with pytest.raises(ToolFailed, match="outcome unknown"):
+        make(store, fn).call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k")
+    assert fn.calls == 0
+    # The human verified and chose retry: now it executes.
+    make(store, fn).call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k")
+    assert fn.calls == 1
+
+
+def test_in_flight_key_with_reconcile_adopts_the_earlier_result(store):
+    fn = Counter()
+    reg = ToolRegistry(store, allowlist={"intake": {"echo"}}, sleep=lambda s: None)
+    reg.register("echo", fn, EchoIn, EchoOut, reconcile=lambda a: EchoOut(text="FOUND"))
+    store.reserve_idem("k")
+    assert reg.call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k").text == "FOUND"
+    assert fn.calls == 0 and store.get_idem("k") == {"text": "FOUND"}
+
+
+def test_in_flight_key_reconcile_not_found_executes(store):
+    fn = Counter()
+    reg = ToolRegistry(store, allowlist={"intake": {"echo"}}, sleep=lambda s: None)
+    reg.register("echo", fn, EchoIn, EchoOut, reconcile=lambda a: None)
+    store.reserve_idem("k")
+    assert reg.call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k").text == "HI"
+    assert fn.calls == 1
+
+
+def test_ambiguous_error_is_never_retried_blindly(store):
+    from app.tools.registry import AmbiguousToolError
+    fn = Counter([AmbiguousToolError("read timeout")])
+    with pytest.raises(ToolFailed, match="outcome unknown"):
+        make(store, fn).call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k")
+    assert fn.calls == 1
+
+
+def test_ambiguous_error_reconciles_with_a_lookup(store):
+    from app.tools.registry import AmbiguousToolError
+    fn = Counter([AmbiguousToolError("read timeout")])
+    reg = ToolRegistry(store, allowlist={"intake": {"echo"}}, sleep=lambda s: None)
+    reg.register("echo", fn, EchoIn, EchoOut, reconcile=lambda a: EchoOut(text="FOUND"))
+    assert reg.call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k").text == "FOUND"
+    assert fn.calls == 1
+
+
+def test_failing_reconcile_lookup_is_a_tool_failure_not_a_repeat(store):
+    from app.tools.registry import AmbiguousToolError
+
+    def boom(a):
+        raise RuntimeError("lookup down")
+    fn = Counter([AmbiguousToolError("read timeout")])
+    reg = ToolRegistry(store, allowlist={"intake": {"echo"}}, sleep=lambda s: None)
+    reg.register("echo", fn, EchoIn, EchoOut, reconcile=boom)
+    with pytest.raises(ToolFailed, match="outcome unknown"):
+        reg.call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k")
+    assert fn.calls == 1
+
+
+def test_repeatable_tool_re_executes_an_in_flight_key(store):
+    fn = Counter()
+    reg = ToolRegistry(store, allowlist={"intake": {"echo"}}, sleep=lambda s: None)
+    reg.register("echo", fn, EchoIn, EchoOut, repeat_within=float("inf"))
+    store.reserve_idem("k")
+    reg.call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k")
+    assert fn.calls == 1
+
+
+def test_permanent_rejection_releases_the_reservation(store):
+    fn = Counter([PermanentToolError("400")])
+    with pytest.raises(ToolFailed):
+        make(store, fn).call("intake", "echo", {"text": "hi"}, run_id="r1", idempotency_key="k")
+    assert store.reserve_idem("k") is None  # nothing could have happened: free again

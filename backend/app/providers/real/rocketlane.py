@@ -8,6 +8,8 @@ import httpx
 from app.services.keys import customer_key
 from app.tools.registry import AmbiguousToolError, PermanentToolError, TransientToolError
 
+COMPLETED_LABELS = {"completed", "done"}  # UNVERIFIED: Rocketlane's status list isn't documented (see list_tasks)
+
 
 class RocketlaneClient:
     def __init__(self, base_url: str, api_key: str, timeout: float = 20.0,
@@ -68,11 +70,13 @@ class RocketlaneClient:
         out = self._request("POST", "/projects", json=body, write=True)
         return str(out["projectId"])
 
-    def find_project(self, customer_name: str, external_reference_id: str) -> str | None:
+    def find_project(self, customer_name: str, external_reference_id: str, by_name: bool = True) -> str | None:
         hits = self._get_all("/projects", **{"externalReferenceId.eq": external_reference_id,
                                              "includeArchive.eq": "true"})
         if hits:
             return str(hits[0]["projectId"])
+        if not by_name:
+            return None
         # companyName.eq is exact and case-sensitive, so compare normalized names client-side.
         key = customer_key(customer_name)
         for p in self._get_all("/projects", **{"includeArchive.eq": "true"}):
@@ -104,6 +108,29 @@ class RocketlaneClient:
         if marker in existing:
             return  # this batch was already written (e.g. an ambiguous PUT being retried)
         self._request("PUT", f"/tasks/{task_id}", json={"taskPrivateNote": existing + note_html}, write=True)
+
+    def list_tasks(self, project_id: str) -> list[dict]:
+        """GET /tasks?projectId.eq= (documented, rocketlane-api.md §6), normalized to RlTask fields.
+
+        VERIFIED live 2026-11-12: `phase` is null unless includeFields=phase is sent, then {phaseId, phaseName};
+        default statuses are To do=1, In progress=2, Completed=3."""
+        out = []
+        for t in self._get_all("/tasks", **{"projectId.eq": project_id, "includeFields": "phase"}):
+            status = t.get("status") or {}
+            label = str(status.get("label") or "")
+            due = t.get("dueDate")
+            out.append({"task_id": str(t["taskId"]), "name": str(t.get("taskName", "")),
+                        "phase": (t.get("phase") or {}).get("phaseName"),
+                        "status_value": status.get("value"), "status_label": label,
+                        "completed": label.strip().lower() in COMPLETED_LABELS,
+                        "due_date": str(due) if due else None})
+        return out
+
+    def set_task_status(self, task_id: str, status_value: int) -> None:
+        """PUT /tasks/{id} {status: {value}} (documented on update-task). The body carries nothing else.
+        UNVERIFIED against the live API: that a status-only PUT leaves notes, dates and assignees unchanged (the
+        same was verified for a taskPrivateNote-only PUT on 2026-11-11). Idempotent: same value twice is a no-op."""
+        self._request("PUT", f"/tasks/{task_id}", json={"status": {"value": int(status_value)}}, write=True)
 
     def check_templates(self, configured: dict[str, str]) -> list[str]:
         """Preflight: every configured template ID must exist and be a PROJECT template."""

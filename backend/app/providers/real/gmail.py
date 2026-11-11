@@ -9,7 +9,7 @@ from email.utils import parseaddr
 from typing import Any
 
 from app.tools.definitions import GmailReplyIn, GmailReplyOut, InboundEmail
-from app.tools.registry import PermanentToolError, TransientToolError
+from app.tools.registry import AmbiguousToolError, PermanentToolError, TransientToolError
 
 DEAL_SUBJECT = re.compile(r"closed[\s-]*won|new deal|deal closed", re.I)
 AUTO_SUBJECT = re.compile(r"^(automatic reply|auto[- ]?reply|out of (the )?office|undeliverable|delivery status)", re.I)
@@ -111,6 +111,8 @@ def build_reply(a: GmailReplyIn, sender: str) -> dict:
     m["To"], m["From"], m["Subject"] = a.to, sender, a.subject
     if a.rfc_message_id:
         m["In-Reply-To"] = m["References"] = a.rfc_message_id
+    if a.message_id_header:
+        m["Message-ID"] = a.message_id_header  # deterministic: lets find_sent prove whether it went out
     m.set_content(a.body)
     return {"raw": base64.urlsafe_b64encode(m.as_bytes()).decode(), "threadId": a.thread_id}
 
@@ -128,11 +130,14 @@ class GmailClient:
     def __init__(self, service: Any, self_address: str):
         self.service, self.self_address = service, self_address.lower()
 
-    def _exec(self, req) -> dict:
+    def _exec(self, req, write: bool = False) -> dict:
         try:
             return req.execute()
         except Exception as e:  # googleapiclient.errors.HttpError and transport errors
             status = getattr(getattr(e, "resp", None), "status", 0)
+            if write and (status == 0 or status >= 500):
+                # Timeout / reset / gateway error after the request went out: Gmail may have sent it.
+                raise AmbiguousToolError(f"gmail {status}: {e}") from e
             if status == 404:
                 raise PermanentToolError("not_found") from e
             if status in (0, 429) or status >= 500 or (status == 403 and "rateLimitExceeded" in str(e)):
@@ -140,8 +145,16 @@ class GmailClient:
             raise PermanentToolError(f"gmail {status}: {e}") from e
 
     def reply(self, a: GmailReplyIn) -> GmailReplyOut:
-        sent = self._exec(self.service.users().messages().send(userId="me", body=build_reply(a, self.self_address)))
+        sent = self._exec(self.service.users().messages().send(userId="me", body=build_reply(a, self.self_address)),
+                          write=True)
         return GmailReplyOut(message_id=sent["id"])
+
+    def find_sent(self, message_id_header: str) -> str | None:
+        """Gmail id of our sent message with this RFC 822 Message-ID, else None."""
+        body = self._exec(self.service.users().messages().list(
+            userId="me", q=f"in:sent rfc822msgid:{message_id_header.strip('<>')}", maxResults=1))
+        msgs = body.get("messages") or []
+        return msgs[0]["id"] if msgs else None
 
     def current_history_id(self) -> str:
         return str(self._exec(self.service.users().getProfile(userId="me"))["historyId"])

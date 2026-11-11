@@ -28,10 +28,15 @@ class Settings(BaseSettings):
 
     call_max_attempts: int = 3
     call_retry_delay_seconds: int = 30
+    tracking_interval_seconds: int = 600  # Agent 3: how often tick() syncs Rocketlane projects
+    # A run between interrupts (RECEIVED / TIER_CONFIRMED / PROJECT_CREATED) not updated for this long had its
+    # worker die mid-node: tick() escalates it (system: retry resumes from the checkpoint, or cancel).
+    stuck_run_minutes: int = 10
 
     anthropic_api_key: str = ""
     llm_model: str = "claude-haiku-5-5"
     llm_judge_model: str = "claude-haiku-5-5"
+    llm_handoff_model: str = "claude-sonnet-5-5"  # one internal doc per customer; see DECISIONS.md §2
 
     google_client_id: str = ""
     google_client_secret: str = ""
@@ -52,6 +57,8 @@ class Settings(BaseSettings):
     rocketlane_pm_email: str = ""
     rocketlane_csm_enterprise: str = ""
     rocketlane_csm_growth: str = ""
+    # Web app URL (e.g. https://<subdomain>.rocketlane.com) for dashboard project links; optional.
+    rocketlane_app_url: str = ""
 
     demo_ae_name: str = ""
     demo_ae_email: str = ""

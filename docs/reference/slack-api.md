@@ -80,7 +80,7 @@ Source: https://docs.slack.dev/tools/developer-sandboxes (provision at https://a
 
 ## 6. 2025–2026 changes that matter
 
-- **conversations.history / conversations.replies rate cut** (https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps): for commercially distributed, non-Marketplace apps (created on or after 2025-05-29, or new installs), these move to **Tier 1-like: 1 req/min, max 15 objects**. **Internal / custom apps are not affected** (50+/min, limit up to 1000). Our single-workspace internal app is exempt, and our flow does not call these methods anyway.
+- **conversations.history / conversations.replies rate cut** (https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps): for commercially distributed, non-Marketplace apps (created on or after 2025-05-29, or new installs), these move to **Tier 1-like: 1 req/min, max 15 objects**. **Internal / custom apps are not affected** (50+/min, limit up to 1000). Our single-workspace internal app is exempt. We call `conversations.history` only to check, after an ambiguous `chat.postMessage` timeout or a crash, whether our message is already there.
 - API Terms of Service update: in effect for apps created on or after 2025-05-29, and from 2025-06-30 for older apps (same changelog).
 - `assistant_view` (AI assistant messaging) is deprecated for **February 2027** and replaced by the Agent Sessions API (https://docs.slack.dev/changelog/tags/deprecation, 2026-08-20). This does not affect the methods above.
 - New manifest properties in 2026 (`features.agent_view`, `settings.is_mcp_enabled`) and a `slack manifest diff` CLI command are optional and do not affect this flow (reported via search results; **UNVERIFIED** in detail).
@@ -89,4 +89,4 @@ Source: https://docs.slack.dev/tools/developer-sandboxes (provision at https://a
 
 ## 7. Scope set for our bot (minimum)
 
-`channels:manage` (create/topic/invite, public) · `groups:write` (only if `is_private=True`) · `channels:read` (+ `groups:read`) for the list fallback · `chat:write` · `conversations.connect:write` · `users:read.email` (only if we resolve internal users by email). After changing scopes, reinstall the app.
+`channels:manage` (create/topic/invite, public) · `groups:write` (only if `is_private=True`) · `channels:read` (+ `groups:read`) for the list fallback · `chat:write` · `conversations.connect:write` · `users:read.email` (only if we resolve internal users by email) · `channels:history` (reconcile lookup before re-posting; without it that lookup fails and the run escalates instead of re-posting). After changing scopes, reinstall the app.

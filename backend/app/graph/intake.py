@@ -7,6 +7,7 @@ from app.config import PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER, PLACEHOLDER_PM, Ti
 from app.graph.state import Deps, OnboardingState
 from app.guardrails.decision import CallOutcome, CallResult, decide_tier
 from app.guardrails.input import find_opportunity_url, opportunity_id_from_url, validate_deal
+from app.llm import versions as prompts
 from app.llm.client import LLMError
 from app.llm.schemas import DealFields, ExtractedDeal, TranscriptReading
 from app.services.keys import customer_key, opportunity_key
@@ -45,7 +46,7 @@ def build_intake(d: Deps):
                 f"{email['body']}\n</email>")
         try:
             fields = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="extract_fields",
-                                 prompt="extract_v1", user=user, schema=DealFields)
+                                 prompt=prompts.EXTRACT, user=user, schema=DealFields)
         except LLMError as e:
             return d.escalate(s, AGENT, f"Could not read the deal email (LLM unavailable): {e}", "system")
         rationale = "LLM structured extraction (email treated as untrusted data)"
@@ -80,7 +81,8 @@ def build_intake(d: Deps):
         try:
             d.registry.call(AGENT, "gmail_reply", dict(
                 thread_id=email["thread_id"], rfc_message_id=email["rfc_message_id"], to=email["sender"],
-                subject=f"Re: {email['subject']}", body=body),
+                subject=f"Re: {email['subject']}", body=body,
+                message_id_header=f"<clarify-{s['run_id']}@{_mail_domain(d)}>"),
                 run_id=s["run_id"], idempotency_key=f"clarify:{s['run_id']}",
                 rationale=f"missing/invalid fields: {issues}")
         except ToolFailed as e:
@@ -98,13 +100,20 @@ def build_intake(d: Deps):
         d.audit(s, AGENT, "lookup_ae", f"AE {ae.name} found; will call to confirm tier")
         return {"ae": ae.model_dump()}
 
+    def precheck_duplicate(s: OnboardingState) -> dict:
+        # The opportunity is known from the email: never phone the AE about a deal that is already onboarded.
+        # check_duplicate runs again after the call (another run may have created a project meanwhile).
+        return _duplicate(s, "precheck_duplicate") or {}
+
     def place_call(s: OnboardingState) -> dict:
         attempt = s.get("call_attempts", 0) + 1
+        key = f"call:{s['run_id']}:{attempt}:{s.get('escalation_count', 0)}"
         try:
             out = d.registry.call(AGENT, "voice_start_call", dict(
                 to_number=s["ae"]["phone"], ae_name=s["ae"]["name"],
-                customer_name=s["extracted"]["customer_name"], run_id=s["run_id"], attempt=attempt),
-                run_id=s["run_id"], idempotency_key=f"call:{s['run_id']}:{attempt}:{s.get('escalation_count', 0)}",
+                customer_name=s["extracted"]["customer_name"], run_id=s["run_id"], attempt=attempt,
+                idempotency_key=key.replace(":", "-")),
+                run_id=s["run_id"], idempotency_key=key,
                 rationale=f"tier confirmation call, attempt {attempt}")
         except ToolFailed as e:
             return {**d.escalate(s, AGENT, f"Could not place call to AE: {e.reason}", "tier"), "call_attempts": attempt}
@@ -127,7 +136,7 @@ def build_intake(d: Deps):
         if result.status == "connected" and result.transcript.strip():
             try:
                 reading = d.llm.parse(run_id=s["run_id"], agent=AGENT, node="interpret_call",
-                                      prompt="interpret_v1", user=f"<transcript>\n{result.transcript}\n</transcript>",
+                                      prompt=prompts.INTERPRET, user=f"<transcript>\n{result.transcript}\n</transcript>",
                                       schema=TranscriptReading)
             except LLMError as e:
                 # The AE may well have confirmed; a human reviews the transcript and can set the tier.
@@ -160,7 +169,7 @@ def build_intake(d: Deps):
                        "attempt": s["call_attempts"]})
         return {"retry_at": None}
 
-    def check_duplicate(s: OnboardingState) -> dict:
+    def _duplicate(s: OnboardingState, step: str) -> dict | None:
         x = s["extracted"]
         key = customer_key(x["customer_name"])
         d.store.upsert_run(s["run_id"], opportunity_id=x.get("opportunity_id"), customer_key=key,
@@ -169,6 +178,11 @@ def build_intake(d: Deps):
                                             exclude_run_id=s["run_id"]):
             return d.escalate(s, AGENT, f"Existing onboarding run {other['id']} already has a project "
                                         f"for this customer/opportunity", "duplicate")
+        if d.store.peek_idem(f"project:{s['run_id']}"):
+            # This run's own create was interrupted: the project Rocketlane may show is ours, and
+            # create_project's reconcile lookup adopts it instead of creating a second one.
+            d.audit(s, AGENT, step, "this run's earlier project create was interrupted; create_project reconciles")
+            return None
         try:
             found = d.registry.call(AGENT, "rocketlane_find_project", dict(
                 customer_name=x["customer_name"], external_reference_id=_ext_ref(s)), run_id=s["run_id"])
@@ -176,8 +190,11 @@ def build_intake(d: Deps):
             return d.escalate(s, AGENT, f"Rocketlane API unavailable during duplicate check: {e.reason}", "system")
         if found.project_id:
             return d.escalate(s, AGENT, f"Existing Rocketlane project {found.project_id} for this customer", "duplicate")
-        d.audit(s, AGENT, "check_duplicate", "no existing run or Rocketlane project")
-        return {}
+        d.audit(s, AGENT, step, "no existing run or Rocketlane project")
+        return None
+
+    def check_duplicate(s: OnboardingState) -> dict:
+        return _duplicate(s, "check_duplicate") or {}
 
     def create_project(s: OnboardingState) -> dict:
         x, rule = s["extracted"], d.rules[Tier(s["plan_tier"])]
@@ -207,8 +224,8 @@ def build_intake(d: Deps):
         return END if s.get("escalation_reason") else None
 
     g = StateGraph(OnboardingState)
-    for fn in (check_sender, extract_fields, validate, request_clarification, lookup_ae, place_call, await_call,
-               interpret_call, wait_retry, check_duplicate, create_project):
+    for fn in (check_sender, extract_fields, validate, request_clarification, lookup_ae, precheck_duplicate,
+               place_call, await_call, interpret_call, wait_retry, check_duplicate, create_project):
         g.add_node(fn.__name__, fn)
     g.add_conditional_edges(START, entry, ["check_sender", "extract_fields", "place_call", "check_duplicate"])
     g.add_conditional_edges("check_sender", lambda s: escalated(s) or "extract_fields", [END, "extract_fields"])
@@ -217,7 +234,8 @@ def build_intake(d: Deps):
         "request_clarification" if s["issues"] else "lookup_ae"),
         [END, "request_clarification", "lookup_ae"])
     g.add_edge("request_clarification", END)
-    g.add_conditional_edges("lookup_ae", lambda s: escalated(s) or "place_call", [END, "place_call"])
+    g.add_conditional_edges("lookup_ae", lambda s: escalated(s) or "precheck_duplicate", [END, "precheck_duplicate"])
+    g.add_conditional_edges("precheck_duplicate", lambda s: escalated(s) or "place_call", [END, "place_call"])
     g.add_conditional_edges("place_call", lambda s: escalated(s) or "await_call", [END, "await_call"])
     g.add_edge("await_call", "interpret_call")
     g.add_conditional_edges("interpret_call", lambda s: escalated(s) or (
@@ -228,6 +246,10 @@ def build_intake(d: Deps):
                             [END, "create_project"])
     g.add_edge("create_project", END)
     return g.compile()
+
+
+def _mail_domain(d: Deps) -> str:
+    return (d.settings.cs_inbox_address.rpartition("@")[2] or "onboarding.invalid").strip()
 
 
 def _ext_ref(s: OnboardingState) -> str:

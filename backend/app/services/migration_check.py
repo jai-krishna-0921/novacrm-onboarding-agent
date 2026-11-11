@@ -5,6 +5,8 @@ The task is never closed here. A person closes it after reading the evidence.
 """
 
 import html
+import json
+import time
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -83,13 +85,27 @@ def _note(results: list[CheckResult], batch_id: str, ts: str) -> str:
 
 
 def run_migration_check(store: Store, registry: ToolRegistry, contacts: Callable[[], tuple[Contacts, Contacts]],
-                        run_id: str) -> dict:
-    """Caller guarantees the run exists and has a Rocketlane project."""
+                        run_id: str, reuse_within: float = 0, clock: Callable[[], float] = time.time) -> dict:
+    """Caller guarantees the run exists and has a Rocketlane project.
+
+    reuse_within: if a check with identical results finished that many seconds ago, return it instead of writing
+    a second batch and evidence note (a double-clicked button). Not reused once its escalation was closed."""
     run = store.get_run(run_id) or {}
     project_id = run["rocketlane_project_id"]
     source, dest = contacts()  # raises MigrationDataUnavailable before anything is recorded
-    batch_id, ts = uuid.uuid4().hex[:12], now()
     results = evaluate(source, dest)
+    fingerprint = json.dumps([r.__dict__ for r in results], sort_keys=True, default=str)
+    last_key = f"migration_last:{run_id}"
+    if reuse_within and (last := store.get_kv(last_key)):
+        last = json.loads(last)
+        esc = last["out"]["escalation"]
+        still_open = not esc or any(e["key"] == esc for e in store.list_escalations("open"))
+        if last["fingerprint"] == fingerprint and clock() - last["at"] < reuse_within and still_open:
+            audit(store, run_id, AGENT, "migration_check", status="ignored", output={"batch_id": last["out"]["batch_id"]},
+                  rationale=f"identical check finished {int(clock() - last['at'])}s ago; returned it instead of "
+                            "running a second batch")
+            return last["out"]
+    batch_id, ts = uuid.uuid4().hex[:12], now()
     for r in results:
         store.add_migration_check(dict(run_id=run_id, batch_id=batch_id, ts=ts, check_name=r.name,
                                        passed=r.passed, details=r.details))
@@ -134,5 +150,8 @@ def run_migration_check(store: Store, registry: ToolRegistry, contacts: Callable
           rationale=("all four checks passed; evidence attached, task left open for a person to close" if not problems
                      else "escalated to CSM: " + "; ".join(problems)),
           status="ok" if not problems else "escalated")
-    return {"batch_id": batch_id, "passed": passed, "results": [r.__dict__ for r in results],
-            "task_note": task_note, "escalation": escalation}
+    out = {"batch_id": batch_id, "passed": passed, "results": [r.__dict__ for r in results],
+           "task_note": task_note, "escalation": escalation}
+    if reuse_within:  # only button clicks dedupe against each other; scheduled syncs always record a batch
+        store.set_kv(last_key, json.dumps({"at": clock(), "fingerprint": fingerprint, "out": out}, default=str))
+    return out

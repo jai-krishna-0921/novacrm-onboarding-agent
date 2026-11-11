@@ -29,3 +29,7 @@ class TranscriptReading(BaseModel):
 
 class WelcomeDraft(BaseModel):
     message: str
+
+
+class HandoffDraft(BaseModel):
+    summary: str = Field(description="Plain-text handoff summary for the support team")

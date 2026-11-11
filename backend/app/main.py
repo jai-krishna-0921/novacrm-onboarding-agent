@@ -6,9 +6,12 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import Settings
@@ -18,12 +21,16 @@ from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
 from app.services.audit import audit
 from app.services.migration_check import MigrationDataUnavailable, run_migration_check
-from app.tools.registry import PermanentToolError
+from app.services.runner import AWAITING, MID_NODE
+from app.services.tracking import Tracker, tracking_view
+from app.tools.registry import PermanentToolError, ToolFailed
 
 log = logging.getLogger("onboarding")
 CURSOR = "gmail_history_id"
 RECONCILE_AFTER = 180       # seconds without a webhook before we ask Retell directly
 CALL_RESULT_TIMEOUT = 900   # seconds after which a call with no usable result counts as a failed attempt
+MIGRATION_CHECK_REUSE_SECONDS = 60  # an identical re-check this soon is a double click: return the first batch
+STATIC = Path(__file__).parent / "static"
 
 
 class Dismissal(BaseModel):
@@ -45,6 +52,10 @@ def create_app(c: Container | None = None) -> FastAPI:
 
     def container() -> Container:
         return app.state.container
+
+    def tracker() -> Tracker:
+        k = container()
+        return Tracker(k.settings, k.store, k.registry, k.llm, k.migration_contacts)
 
     # ---------- inbox sync (shared by Pub/Sub push and the polling fallback) ----------
     def sync_inbox() -> None:
@@ -76,7 +87,8 @@ def create_app(c: Container | None = None) -> FastAPI:
             k.store.set_kv(CURSOR, new_cursor)
 
     def tick(now: float | None = None) -> None:
-        """Scheduler: resume due retry waits; reconcile calls whose webhook never arrived.
+        """Scheduler: resume due retry waits; reconcile calls whose webhook never arrived; escalate runs whose
+        worker died mid-node (nothing else would ever resume them).
 
         Each run is isolated (one failure never blocks the others) and Retell is polled OUTSIDE the lock;
         results are applied under the lock through the same pending-call guard as the webhook."""
@@ -86,15 +98,23 @@ def create_app(c: Container | None = None) -> FastAPI:
             for run in k.store.list_runs(500):
                 try:
                     status = run.get("status")
-                    if status == "AWAITING_RETRY":
-                        p = k.runner.pending(run["id"])
+                    age = now - datetime.fromisoformat(run["updated_at"]).timestamp()
+                    p = k.runner.pending(run["id"]) if status in AWAITING else None
+                    # An AWAITING_* status written just before the worker died, with the interrupt it implies never
+                    # checkpointed (pending is missing or the consumed one), is as stuck as a mid-node run.
+                    orphaned = status in AWAITING and (p or {}).get("type") != AWAITING[status]
+                    if (status in MID_NODE or orphaned) and age >= k.settings.stuck_run_minutes * 60:
+                        # Under the lock no graph step is running in this process, so this run is not progressing.
+                        k.runner.escalate_stuck(run["id"], (
+                            f"Run stopped in {status} for {int(age // 60)} min (worker died mid-step?). A side "
+                            "effect may be half done; retry resumes from the last checkpoint and reuses anything "
+                            "already created, cancel stops the run."))
+                    elif status == "AWAITING_RETRY":
                         if p and p.get("type") == "wait" and p["until"] <= now:
                             k.runner.resume_wait(run["id"])
-                    elif status == "AWAITING_CALL" and k.voice is not None:
-                        age = now - datetime.fromisoformat(run["updated_at"]).timestamp()
-                        p = k.runner.pending(run["id"])
-                        if age >= RECONCILE_AFTER and p and p.get("type") == "call":
-                            stale.append((run["id"], p["provider_call_id"], age))
+                    elif status == "AWAITING_CALL" and k.voice is not None and age >= RECONCILE_AFTER \
+                            and p and p.get("type") == "call":
+                        stale.append((run["id"], p["provider_call_id"], age))
                 except Exception:  # noqa: BLE001
                     log.exception("scheduler: run %s failed", run.get("id"))
         for run_id, call_id, age in stale:
@@ -102,6 +122,23 @@ def create_app(c: Container | None = None) -> FastAPI:
                 reconcile(run_id, call_id, age)
             except Exception:  # noqa: BLE001
                 log.exception("scheduler: reconcile %s failed", run_id)
+        if k.registry is not None and now - last_tracking[0] >= k.settings.tracking_interval_seconds:
+            last_tracking[0] = now
+            track_all()
+
+    last_tracking = [float("-inf")]
+
+    def track_all() -> None:
+        """Agent 3: sync every live project. Lock per run (webhooks interleave); one failure never blocks others."""
+        t = tracker()
+        for run_id in t.due_runs():
+            try:
+                with lock:
+                    t.sync(run_id)
+            except Exception as e:  # noqa: BLE001
+                log.exception("scheduler: tracking sync %s failed", run_id)
+                audit(container().store, run_id, "tracking", "sync_failed", status="failed",
+                      rationale=f"{type(e).__name__}: {e}")
 
     def reconcile(run_id: str, call_id: str, age: float) -> None:
         k = container()
@@ -198,7 +235,11 @@ def create_app(c: Container | None = None) -> FastAPI:
     def _apply_call_result(run_id: str, result: CallResult, step: str, why: str) -> None:
         k = container()
         pending = k.runner.pending(run_id)
-        if not pending or pending.get("type") != "call" or pending.get("provider_call_id") != result.provider_call_id:
+        # After a crash mid-node the checkpoint can still show the consumed call interrupt; the run status (set
+        # by the graph once the result is processed) is the second witness that the run still waits for it.
+        waiting = (k.store.get_run(run_id) or {}).get("status") == "AWAITING_CALL"
+        if not waiting or not pending or pending.get("type") != "call" \
+                or pending.get("provider_call_id") != result.provider_call_id:
             audit(k.store, run_id, "root", step,
                   rationale=f"ignored result for {result.provider_call_id}: run is not waiting on that call",
                   status="ignored")
@@ -226,6 +267,7 @@ def create_app(c: Container | None = None) -> FastAPI:
         return {"run": run, "pending": k.runner.pending(run_id), "audit": k.store.list_audit(run_id),
                 "tool_calls": k.store.list_tool_calls(run_id),
                 "migration_checks": k.store.list_migration_checks(run_id),
+                "tracking": tracking_view(k.store, run_id),
                 "llm": {"calls": len(llm), "input_tokens": sum(r["input_tokens"] for r in llm),
                         "output_tokens": sum(r["output_tokens"] for r in llm),
                         "cost_usd": round(sum(float(r["cost_usd"]) for r in llm), 6), "by_node": llm}}
@@ -254,9 +296,25 @@ def create_app(c: Container | None = None) -> FastAPI:
             raise HTTPException(404, "run has no Rocketlane project yet")
         with lock:
             try:
-                return run_migration_check(k.store, k.registry, k.migration_contacts, run_id)
+                return run_migration_check(k.store, k.registry, k.migration_contacts, run_id,
+                                           reuse_within=MIGRATION_CHECK_REUSE_SECONDS)
             except MigrationDataUnavailable as e:
                 raise HTTPException(503, f"migration databases unreachable: {e}") from e
+
+    @app.post("/runs/{run_id}/sync")
+    def sync_run(run_id: str):
+        """Agent 3 on demand: same sync the scheduler runs every TRACKING_INTERVAL_SECONDS."""
+        k = container()
+        run = k.store.get_run(run_id)
+        if not run:
+            raise HTTPException(404, "run not found")
+        if not run.get("rocketlane_project_id"):
+            raise HTTPException(404, "run has no Rocketlane project yet")
+        with lock:
+            try:
+                return tracker().sync(run_id)
+            except ToolFailed as e:
+                raise HTTPException(502, f"Rocketlane unavailable: {e}") from e
 
     @app.post("/runs/{run_id}/migration-escalation/dismiss")
     def dismiss_migration_escalation(run_id: str, body: Dismissal):
@@ -281,6 +339,17 @@ def create_app(c: Container | None = None) -> FastAPI:
         if k.inbox is None:
             raise HTTPException(400, "gmail not configured (PROVIDER_MODE=fake)")
         return k.inbox.watch(k.settings.gmail_pubsub_topic)
+
+    # ---------- dashboard UI (static, same-origin; Caddy basic auth covers it in production) ----------
+    @app.get("/ui", include_in_schema=False)
+    def ui():
+        return FileResponse(STATIC / "index.html")
+
+    @app.get("/ui/config", include_in_schema=False)
+    def ui_config():
+        return {"rocketlane_app_url": container().settings.rocketlane_app_url.rstrip("/")}
+
+    app.mount("/ui/assets", StaticFiles(directory=STATIC), name="ui-assets")
 
     return app
 

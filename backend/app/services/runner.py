@@ -12,6 +12,12 @@ from app.graph.root import validate_resolution
 from app.services.audit import audit
 from app.services.store import Store
 
+# Statuses a run only holds while a node is executing (every interrupt or end sets another status first).
+MID_NODE = {"RECEIVED", "TIER_CONFIRMED", "PROJECT_CREATED"}
+# Waiting statuses and the interrupt type the checkpoint must show for them.
+AWAITING = {"AWAITING_CALL": "call", "AWAITING_RETRY": "wait"}
+STUCK = "stuck"  # escalation key infix for runs whose worker died mid-node (raised by the scheduler)
+
 
 class Runner:
     def __init__(self, graph, store: Store):
@@ -42,13 +48,41 @@ class Runner:
     def resume_wait(self, run_id: str) -> dict:
         return self.invoke(run_id, Command(resume={"type": "wake"}))
 
+    def escalate_stuck(self, run_id: str, reason: str) -> None:
+        """Outside the graph (it is not at an interrupt): open a system escalation; resolve() handles it."""
+        n = sum(1 for e in self.store.list_escalations() if e["run_id"] == run_id and f":{STUCK}:" in e["key"])
+        self.store.upsert_escalation(f"{run_id}:{STUCK}:{n + 1}", dict(
+            run_id=run_id, reason=reason, kind="system", agent="root", status="open"))
+        self.store.upsert_run(run_id, status="ESCALATED")
+        audit(self.store, run_id, "root", "escalate", rationale=reason, status="escalated")
+
+    def _open_stuck(self, run_id: str) -> dict | None:
+        return next((e for e in self.store.list_escalations("open")
+                     if e["run_id"] == run_id and f":{STUCK}:" in e["key"]), None)
+
     def resolve(self, run_id: str, resolution: dict) -> dict:
+        if esc := self._open_stuck(run_id):
+            return self._resolve_stuck(run_id, esc, resolution)
         state = self.graph.get_state(self.cfg(run_id)).values
         pending = self.pending(run_id)
         if not pending or pending.get("type") != "escalation":
             raise ValueError("run is not waiting for a human resolution")
         validate_resolution(resolution, state)
         return self.invoke(run_id, Command(resume=resolution))
+
+    def _resolve_stuck(self, run_id: str, esc: dict, resolution: dict) -> dict:
+        validate_resolution(resolution, {"escalation_kind": "system"})
+        self.store.upsert_escalation(esc["key"], dict(status="resolved", resolved_by=resolution["by"],
+                                                      resolution=resolution))
+        audit(self.store, run_id, "root", "resolve", input=resolution,
+              rationale=f"human resolution by {resolution['by']}: {resolution['action']} (stuck run)")
+        if resolution["action"] == "cancel":
+            self.store.upsert_run(run_id, status="CANCELLED")
+            return {}
+        # Resume the interrupted node from its checkpoint; the registry's in-flight keys make that safe.
+        values = self.graph.get_state(self.cfg(run_id)).values
+        self.store.upsert_run(run_id, status=values.get("status") or "RECEIVED")
+        return self.invoke(run_id, None)
 
     def invoke(self, run_id: str, payload: Any) -> dict:
         try:

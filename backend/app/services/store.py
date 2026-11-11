@@ -8,15 +8,30 @@ from typing import Any, Protocol
 
 RUN_FIELDS = {"status", "gmail_message_id", "opportunity_id", "customer_key", "customer_name", "plan_tier",
               "rocketlane_project_id", "slack_channel_id", "error"}
+# Agent 3 (project tracking): latest task snapshot plus the handoff record, one row per run.
+TRACKING_FIELDS = {"tasks", "synced_at", "handoff_summary", "handed_off_at"}
 
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+IN_FLIGHT = "__in_flight__"  # idempotency value while the side effect is being attempted (holds the start time)
+
+
+def _reservation(value: dict | None) -> dict | None:
+    """reserve_idem's answer for an existing value: in-flight marker or completed result."""
+    if value is None:
+        return None
+    return {"started_at": value[IN_FLIGHT]} if IN_FLIGHT in value else {"result": value}
+
+
 class Store(Protocol):
     def get_idem(self, key: str) -> dict | None: ...
     def put_idem(self, key: str, value: dict) -> None: ...
+    def reserve_idem(self, key: str) -> dict | None: ...
+    def release_idem(self, key: str) -> None: ...
+    def peek_idem(self, key: str) -> dict | None: ...
     def add_audit(self, row: dict) -> None: ...
     def add_tool_call(self, row: dict) -> None: ...
     def add_llm_call(self, row: dict) -> None: ...
@@ -37,6 +52,8 @@ class Store(Protocol):
     def lookup_ae(self, email: str) -> dict | None: ...
     def add_migration_check(self, row: dict) -> None: ...
     def list_migration_checks(self, run_id: str) -> list[dict]: ...
+    def get_tracking(self, run_id: str) -> dict | None: ...
+    def upsert_tracking(self, run_id: str, **fields: Any) -> None: ...
 
 
 class MemoryStore:
@@ -50,13 +67,33 @@ class MemoryStore:
         self.kv: dict[str, str] = {}
         self.aes: dict[str, dict] = {}
         self.migration_checks: list[dict] = []
+        self.tracking: dict[str, dict] = {}
         self._seq = 0
 
     def get_idem(self, key: str) -> dict | None:
-        return self.idem.get(key)
+        v = self.idem.get(key)
+        return None if v is None or IN_FLIGHT in v else v
 
     def put_idem(self, key: str, value: dict) -> None:
-        self.idem.setdefault(key, value)  # first write wins (same as PgStore ON CONFLICT DO NOTHING)
+        # First completed write wins (same as PgStore); a completion replaces an in-flight reservation.
+        if key not in self.idem or IN_FLIGHT in self.idem[key]:
+            self.idem[key] = value
+
+    def reserve_idem(self, key: str) -> dict | None:
+        """Atomically mark `key` in flight. None = reserved now; else {'started_at'} or {'result'} of the holder."""
+        if key in self.idem:
+            return _reservation(self.idem[key])
+        self.idem[key] = {IN_FLIGHT: now()}
+        return None
+
+    def peek_idem(self, key: str) -> dict | None:
+        """Like reserve_idem's answer, without reserving."""
+        return _reservation(self.idem.get(key))
+
+    def release_idem(self, key: str) -> None:
+        """Drop an in-flight reservation (the side effect certainly did not happen). Never drops a result."""
+        if IN_FLIGHT in self.idem.get(key, {}):
+            del self.idem[key]
 
     def add_audit(self, row: dict) -> None:
         self.audit_rows.append(row)
@@ -129,3 +166,13 @@ class MemoryStore:
 
     def list_migration_checks(self, run_id: str) -> list[dict]:
         return [r for r in self.migration_checks if r["run_id"] == run_id]
+
+    def get_tracking(self, run_id: str) -> dict | None:
+        row = self.tracking.get(run_id)
+        return dict(row) if row else None
+
+    def upsert_tracking(self, run_id: str, **fields: Any) -> None:
+        if unknown := set(fields) - TRACKING_FIELDS:
+            raise ValueError(f"unknown tracking fields: {unknown}")
+        row = self.tracking.setdefault(run_id, {"run_id": run_id, **dict.fromkeys(TRACKING_FIELDS)})
+        row.update(fields)

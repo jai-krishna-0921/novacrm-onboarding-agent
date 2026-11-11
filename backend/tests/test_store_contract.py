@@ -35,6 +35,23 @@ def test_idempotency_roundtrip(store):
     assert store.get_idem("k") == {"project_id": "42"}
 
 
+def test_idempotency_reservation_is_hidden_until_completed(store):
+    """A reserved (in-flight) key is not a result; completing it overwrites the marker; release drops it."""
+    assert store.reserve_idem("k") is None                      # fresh reservation
+    assert store.get_idem("k") is None                          # in flight is not a result
+    assert "started_at" in store.reserve_idem("k")              # second reserve sees the in-flight marker
+    store.put_idem("k", {"project_id": "42"})                   # completion replaces the marker
+    assert store.get_idem("k") == {"project_id": "42"}
+    assert store.reserve_idem("k") == {"result": {"project_id": "42"}}
+    store.release_idem("k")                                     # never drops a completed result
+    assert store.get_idem("k") == {"project_id": "42"}
+    store.reserve_idem("k2")
+    store.release_idem("k2")
+    assert store.reserve_idem("k2") is None                     # released: free to reserve again
+    assert "started_at" in store.peek_idem("k2") and store.peek_idem("nope") is None
+    assert store.peek_idem("k") == {"result": {"project_id": "42"}}
+
+
 def test_runs_upsert_and_lookup(store):
     store.upsert_run("r1", status="RECEIVED", gmail_message_id="gm-1")
     store.upsert_run("r1", status="AWAITING_CALL")
@@ -107,3 +124,19 @@ def test_list_runs_newest_first(store):
     store.upsert_run("r1", status="COMPLETED")
     store.upsert_run("r2", status="RECEIVED")
     assert [r["id"] for r in store.list_runs()][:2] == ["r2", "r1"]
+
+
+def test_tracking_upsert_merges_fields_and_rejects_unknown(store):
+    assert store.get_tracking("r1") is None
+    tasks = [{"task_id": "1", "name": "Kickoff call", "phase": "Kickoff", "completed": True}]
+    store.upsert_tracking("r1", tasks=tasks, synced_at="2026-11-11T10:00:00")
+    store.upsert_tracking("r1", handoff_summary="all done")
+    t = store.get_tracking("r1")
+    assert t["tasks"] == tasks and t["synced_at"] == "2026-11-11T10:00:00"
+    assert t["handoff_summary"] == "all done" and t["handed_off_at"] is None
+    store.upsert_tracking("r1", tasks=[], handed_off_at="2026-11-12T00:00:00")
+    t = store.get_tracking("r1")
+    assert t["tasks"] == [] and t["handoff_summary"] == "all done" and t["handed_off_at"]
+    assert store.get_tracking("r2") is None
+    with pytest.raises(ValueError, match="unknown tracking fields"):
+        store.upsert_tracking("r1", status="x")

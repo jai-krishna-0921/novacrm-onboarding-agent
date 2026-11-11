@@ -2,7 +2,7 @@
 
 Multi-agent automation of a mid-market SaaS customer-onboarding workflow (Rocketlane Forward Deployed Engineer take-home).
 
-A "deal closed" email arrives in Gmail. **Agent 1 (Intake & Routing)** extracts and validates the deal, **phones the AE** (Retell AI) to confirm the plan tier, and creates a **Rocketlane** project from the matching template. **Agent 2 (Communication)** opens a personalized **Slack** channel. Overdue-task escalation runs as a native **Rocketlane automation** (1 day overdue → Project Manager, 4 days → Project Owner).
+A "deal closed" email arrives in Gmail. **Agent 1 (Intake & Routing)** extracts and validates the deal, **phones the AE** (Retell AI) to confirm the plan tier, and creates a **Rocketlane** project from the matching template. **Agent 2 (Communication)** opens a personalized **Slack** channel. **Agent 3 (Project Tracking)** watches the Rocketlane project: phase updates in Slack, automatic data-migration verification (a "Migration verified" task ticked without a passing check is reopened), and a fact-checked handoff summary for support at the end. Overdue-task escalation runs as a native **Rocketlane automation** (1 day overdue → Project Manager, 4 days → Project Owner). An ops dashboard at `/ui` shows every run live.
 
 ## Design rules
 1. Customer Success owns the process (templates, durations, owners). Tier → template mapping is config, never prompt text.
@@ -20,7 +20,7 @@ Retell call webhook (HMAC-verified) ───┘          ├─ Agent 1: check 
                                                   │           → duplicate check → create Rocketlane project
                                                   └─ Agent 2: draft welcome (fact-checked) → Slack channel/topic/invites/post
 ```
-- **LLM:** Claude via LangChain `ChatAnthropic`, native JSON-schema structured output; tokens and cost recorded per call.
+- **LLM:** Claude via LangChain `ChatAnthropic`, native JSON-schema structured output; tokens and cost recorded per call. Haiku 5.5 for extraction, transcript cross-check and welcome; Sonnet 5.5 for the handoff summary (chosen from evals on both).
 - **Durable pause:** the graph checkpoints while the phone call happens and resumes on Retell's `call_analyzed` webhook.
 
 ## Guardrails (each has a test proving it blocks)
@@ -47,6 +47,8 @@ make preflight                  # read-only checks of every integration
 make api                        # FastAPI on :8000 (PROVIDER_MODE=fake|real)
 ```
 Setup guides: `docs/ROCKETLANE_SETUP.md`, `docs/CONNECTIONS.md`. Verified API notes: `docs/reference/`.
+Why it's built this way: `docs/DECISIONS.md`. Every guardrail and the test that proves it: `docs/GUARDRAILS.md`.
+Every defect found and how it was fixed: `docs/ISSUES.md`. Deploy (AWS EC2): `deploy/aws_up.sh`, `deploy/deploy.sh`.
 
 ## Repository
 - `backend/app/graph`: LangGraph root router and the two agent subgraphs

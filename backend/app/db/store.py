@@ -14,15 +14,17 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    cast,
     create_engine,
+    delete,
     insert,
     select,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.services.store import IN_FLIGHT, TRACKING_FIELDS, _reservation, now
 from app.services.store import RUN_FIELDS as SHARED_RUN_FIELDS
-from app.services.store import now
 
 metadata = MetaData()
 J = JSON().with_variant(JSONB(), "postgresql")
@@ -71,8 +73,17 @@ migration_checks = Table(
     Column("check_name", String), Column("passed", Boolean, nullable=False), Column("details", J),
 )
 
+project_tracking = Table(
+    "project_tracking", metadata, Column("run_id", String, primary_key=True), Column("tasks", J),
+    Column("synced_at", String), Column("handoff_summary", Text), Column("handed_off_at", String),
+)
+
 RUN_FIELDS = {c.name for c in runs.columns} - {"id", "seq", "created_at", "updated_at"}
 assert RUN_FIELDS == SHARED_RUN_FIELDS, f"run columns drifted from MemoryStore: {RUN_FIELDS ^ SHARED_RUN_FIELDS}"
+
+
+def _in_flight():
+    return cast(idempotency_keys.c.result, JSONB).has_key(IN_FLIGHT)
 
 
 def _rows(result) -> list[dict]:
@@ -92,13 +103,36 @@ class PgStore:
             return c.execute(stmt)
 
     # idempotency
+    # An in-flight reservation is stored as {IN_FLIGHT: started_at} in the same JSONB column (no schema change).
     def get_idem(self, key: str) -> dict | None:
         with self.engine.connect() as c:
-            return c.execute(select(idempotency_keys.c.result).where(idempotency_keys.c.key == key)).scalar()
+            v = c.execute(select(idempotency_keys.c.result).where(idempotency_keys.c.key == key)).scalar()
+        return None if v is None or IN_FLIGHT in v else v
 
     def put_idem(self, key: str, value: dict) -> None:
-        self._exec(pg_insert(idempotency_keys).values(key=key, result=value, created_at=now())
-                   .on_conflict_do_nothing(index_elements=["key"]))
+        # First completed write wins; a completion replaces an in-flight reservation.
+        stmt = pg_insert(idempotency_keys).values(key=key, result=value, created_at=now())
+        self._exec(stmt.on_conflict_do_update(
+            index_elements=["key"], set_={"result": stmt.excluded.result, "created_at": stmt.excluded.created_at},
+            where=_in_flight()))
+
+    def reserve_idem(self, key: str) -> dict | None:
+        with self.engine.begin() as c:
+            got = c.execute(pg_insert(idempotency_keys).values(key=key, result={IN_FLIGHT: now()}, created_at=now())
+                            .on_conflict_do_nothing(index_elements=["key"]).returning(idempotency_keys.c.key)).first()
+            if got:
+                return None
+            return _reservation(c.execute(select(idempotency_keys.c.result)
+                                          .where(idempotency_keys.c.key == key)).scalar())
+
+    def peek_idem(self, key: str) -> dict | None:
+        with self.engine.connect() as c:
+            return _reservation(c.execute(select(idempotency_keys.c.result)
+                                          .where(idempotency_keys.c.key == key)).scalar())
+
+    def release_idem(self, key: str) -> None:
+        self._exec(delete(idempotency_keys).where(idempotency_keys.c.key == key,
+                                                  _in_flight()))
 
     # append-only logs
     def add_audit(self, row: dict) -> None:
@@ -133,6 +167,19 @@ class PgStore:
 
     def list_migration_checks(self, run_id: str) -> list[dict]:
         return self._list(migration_checks, run_id)
+
+    # project tracking (Agent 3)
+    def get_tracking(self, run_id: str) -> dict | None:
+        with self.engine.connect() as c:
+            r = c.execute(select(project_tracking).where(project_tracking.c.run_id == run_id)).first()
+        return dict(r._mapping) if r else None
+
+    def upsert_tracking(self, run_id: str, **fields: Any) -> None:
+        if unknown := set(fields) - TRACKING_FIELDS:
+            raise ValueError(f"unknown tracking fields: {unknown}")
+        stmt = pg_insert(project_tracking).values(run_id=run_id, **fields)
+        self._exec(stmt.on_conflict_do_update(index_elements=["run_id"], set_=fields) if fields
+                   else stmt.on_conflict_do_nothing(index_elements=["run_id"]))
 
     # runs
     def upsert_run(self, run_id: str, **fields: Any) -> None:

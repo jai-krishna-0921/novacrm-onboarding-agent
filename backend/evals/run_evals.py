@@ -14,10 +14,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from app.config import Settings, Tier, tier_rules
-from app.guardrails.output import check_welcome
+from app.guardrails.output import check_handoff, check_welcome
+from app.llm import versions as prompts
 from app.llm.client import LangChainLLM
-from app.llm.schemas import DealFields, TranscriptReading, WelcomeDraft
+from app.llm.schemas import DealFields, HandoffDraft, TranscriptReading, WelcomeDraft
 from app.services.store import MemoryStore
+from app.services.tracking import handoff_user
 
 HERE = Path(__file__).parent
 FIELDS = ["customer_name", "customer_contact_name", "customer_email", "ae_name", "ae_email", "opportunity_id",
@@ -79,7 +81,7 @@ def run_extraction(llm, cases):
     def one(c):
         e = c["email"]
         user = f"<email>\nFrom: {e['sender']}\nSubject: {e['subject']}\n\n{e['body']}\n</email>"
-        out = llm.parse(run_id=f"eval:{c['id']}", agent="eval", node="extract_fields", prompt="extract_v1",
+        out = llm.parse(run_id=f"eval:{c['id']}", agent="eval", node="extract_fields", prompt=prompts.EXTRACT,
                         user=user, schema=DealFields).model_dump()
         return {**score_extraction(c, out), "id": c["id"], "tags": c["tags"], "output": out}
     return _pool(one, cases)
@@ -87,11 +89,17 @@ def run_extraction(llm, cases):
 
 def run_transcripts(llm, cases):
     def one(c):
-        out = llm.parse(run_id=f"eval:{c['id']}", agent="eval", node="interpret_call", prompt="interpret_v1",
+        out = llm.parse(run_id=f"eval:{c['id']}", agent="eval", node="interpret_call", prompt=prompts.INTERPRET,
                         user=f"<transcript>\n{c['transcript']}\n</transcript>", schema=TranscriptReading).model_dump()
         return {**score_transcript(c, out), "id": c["id"], "tags": c["tags"], "output": out,
                 "expected": c["expected"]}
     return _pool(one, cases)
+
+
+# Content the writer prompt supplies on purpose (the CS-approved onboarding template). Without this the judge
+# scores the four phases and the kickoff next step as "invented commitments" (first real eval run, 2026-11-11).
+APPROVED = ("APPROVED TEMPLATE CONTENT (supplied by NovaCRM, not invented): the four onboarding phases in order are "
+            "Kickoff, Data Migration, Configuration, Go-Live; the next step is scheduling the kickoff call.")
 
 
 def run_welcome(llm, judge, settings, cases):
@@ -99,7 +107,7 @@ def run_welcome(llm, judge, settings, cases):
 
     def one(c):
         f = c["facts"]
-        msg = llm.parse(run_id=f"eval:{c['id']}", agent="eval", node="draft_welcome", prompt="welcome_v1",
+        msg = llm.parse(run_id=f"eval:{c['id']}", agent="eval", node="draft_welcome", prompt=prompts.WELCOME,
                         user=json.dumps(f), schema=WelcomeDraft).message
         rule = rules[Tier.ENTERPRISE if f["plan"].lower() == "enterprise" else Tier.GROWTH]
         problems = check_welcome(msg, f["customer_name"], rule)
@@ -109,11 +117,23 @@ def run_welcome(llm, judge, settings, cases):
             problems.append("phases missing or out of order")
         if len(msg.split()) > 120:
             problems.append(f"{len(msg.split())} words > 120")
-        scores = judge.parse(run_id=f"eval:{c['id']}", agent="eval", node="judge_welcome", prompt="judge_v1",
-                             user=f"FACTS:\n{json.dumps(f)}\n\nMESSAGE:\n{msg}", schema=JudgeScores)
+        scores = judge.parse(run_id=f"eval:{c['id']}", agent="eval", node="judge_welcome", prompt=prompts.JUDGE,
+                             user=f"FACTS:\n{json.dumps(f)}\n\n{APPROVED}\n\nMESSAGE:\n{msg}", schema=JudgeScores)
         avg = (scores.personalization + scores.tone + scores.clarity + scores.no_invented_commitments) / 4
         return {"id": c["id"], "tags": c["tags"], "passed": not problems and avg >= 3, "problems": problems,
                 "judge": scores.model_dump(), "judge_avg": avg, "message": msg}
+    return _pool(one, cases)
+
+
+def run_handoff(llm, cases):
+    """Deterministic only (no judge, to save tokens): the production fact check must pass on every case."""
+    def one(c):
+        out = llm.parse(run_id=f"eval:{c['id']}", agent="eval", node="draft_handoff", prompt=prompts.HANDOFF,
+                        user=handoff_user(c["facts"]), schema=HandoffDraft).summary
+        problems = check_handoff(out, c["facts"])
+        if len(out.split()) > 180:
+            problems.append(f"{len(out.split())} words > 180")
+        return {"id": c["id"], "tags": c["tags"], "passed": not problems, "problems": problems, "summary": out}
     return _pool(one, cases)
 
 
@@ -133,7 +153,7 @@ def by_tag(results) -> dict[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--suite", default="all", choices=["all", "extraction", "transcripts", "welcome"])
+    ap.add_argument("--suite", default="all", choices=["all", "extraction", "transcripts", "welcome", "handoff"])
     ap.add_argument("--model")
     ap.add_argument("--judge-model")
     ap.add_argument("--limit", type=int)
@@ -170,6 +190,11 @@ def main() -> int:
                              "judge_avg": round(sum(r["judge_avg"] for r in res) / len(res), 2),
                              "by_tag": by_tag(res), "misses": [r for r in res if not r["passed"]]}
         ok &= all(not r["problems"] for r in res) and report["welcome"]["judge_avg"] >= 3
+    if a.suite in ("all", "handoff"):
+        res = run_handoff(llm, load("handoff.jsonl")[: a.limit])
+        report["handoff"] = {"passed": f"{sum(r['passed'] for r in res)}/{len(res)}", "by_tag": by_tag(res),
+                             "misses": [r for r in res if not r["passed"]]}
+        ok &= all(r["passed"] for r in res)
 
     calls = store.llm_calls
     report["cost"] = {"calls": len(calls), "usd": round(sum(c["cost_usd"] for c in calls), 4),
@@ -178,7 +203,7 @@ def main() -> int:
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(report, indent=2, default=str))
 
-    for suite in ("extraction", "transcripts", "welcome"):
+    for suite in ("extraction", "transcripts", "welcome", "handoff"):
         if suite in report:
             r = report[suite]
             print(f"\n== {suite}: {r['passed']} passed" + (f" | FALSE-CONFIRMED: {r['false_confirmed'] or 0}"

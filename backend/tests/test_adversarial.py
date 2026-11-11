@@ -76,9 +76,12 @@ def test_15_and_18_char_salesforce_ids_are_the_same_opportunity(settings):
 
 
 def test_human_set_tier_still_runs_duplicate_check(settings):
-    existing = [{"projectId": 77, "customer": {"companyName": "Acme Corp"}, "externalReferenceId": "x"}]
-    h = harness(settings, calls=[NO_ANSWER] * 3, existing_projects=existing)
+    existing = {"projectId": 77, "customer": {"companyName": "Acme Corp"}, "externalReferenceId": "x"}
+    h = harness(settings, calls=[NO_ANSWER] * 3)
     rid = h.receive(EMAIL)
+    # Created while the run was escalated (a project that already exists before the call is now caught by
+    # precheck_duplicate, before the AE is phoned).
+    h.world.rocketlane.projects.append(existing)
     h.resolve(rid, {"action": "set_tier", "tier": "growth", "by": HUMAN})
     assert len(h.world.rocketlane.projects) == 1
     assert h.status(rid) == "ESCALATED"

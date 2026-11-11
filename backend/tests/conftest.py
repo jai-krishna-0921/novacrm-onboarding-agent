@@ -17,3 +17,13 @@ def settings() -> Settings:
         call_max_attempts=3,
         call_retry_delay_seconds=0,
     )
+
+
+@pytest.fixture
+def ent(settings):
+    """A completed Enterprise run (project + Slack channel in the fake world)."""
+    from test_workflow import ENTERPRISE_CALL, run
+
+    h, rid = run(settings, calls=[ENTERPRISE_CALL])
+    assert h.status(rid) == "COMPLETED"
+    return h, rid

@@ -226,6 +226,7 @@ def test_existing_rocketlane_project_for_customer_escalates_without_creating(set
     assert h.status(rid) == "ESCALATED"
     assert len(h.world.rocketlane.projects) == 1  # only the pre-existing one
     assert "existing" in h.escalation(rid)["reason"].lower()
+    assert h.world.voice.calls == []  # caught before the AE is phoned
 
 
 def test_second_deal_email_for_same_opportunity_escalates(settings):

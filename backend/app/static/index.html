@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>NovaCRM Onboarding</title>
+  <link rel="icon" href="/ui/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/assets/app.css?v=9">
+</head>
+<body>
+  <a class="skip" href="#app">Skip to content</a>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="#/runs"><span class="brand-mark" aria-hidden="true"></span>NovaCRM onboarding</a>
+      <nav aria-label="Main">
+        <a href="#/runs" data-nav="runs">Runs</a>
+        <a href="#/escalations" data-nav="escalations">Needs a human <span id="esc-count" class="count" hidden></span></a>
+      </nav>
+      <span id="live" class="live" role="status" title="Refreshes every 3 seconds">Connecting</span>
+    </div>
+  </header>
+  <main id="app" tabindex="-1"></main>
+  <script src="/ui/assets/app.js?v=9"></script>
+</body>
+</html>

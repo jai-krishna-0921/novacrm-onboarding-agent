@@ -320,3 +320,23 @@ def test_seed_creates_databases_and_is_idempotent(socket_enabled):
     assert (len(source), len(dest)) == (50, 51)
     r = by_name(evaluate(source, dest))
     assert r["duplicates"].details["sample_ids"] == [23] and r["required_fields"].details["sample_ids"] == [17]
+
+
+def test_identical_recheck_within_the_window_returns_the_first_batch(completed):
+    """Double-click guard (API passes reuse_within=60): same data, seconds apart -> one batch, one note."""
+    h, rid = completed
+    t = [1000.0]
+    first = run_migration_check(h.store, h.deps.registry, lambda: (rows(5), rows(5)), rid, reuse_within=60,
+                                clock=lambda: t[0])
+    t[0] += 5
+    again = run_migration_check(h.store, h.deps.registry, lambda: (rows(5), rows(5)), rid, reuse_within=60,
+                                clock=lambda: t[0])
+    assert again == first and the_task(h)["taskPrivateNote"].count("Migration check") == 1
+    changed = run_migration_check(h.store, h.deps.registry, lambda: (rows(5), rows(4)), rid, reuse_within=60,
+                                  clock=lambda: t[0])                       # data changed: a real new check
+    assert changed["batch_id"] != first["batch_id"]
+    t[0] += 120
+    later = run_migration_check(h.store, h.deps.registry, lambda: (rows(5), rows(4)), rid, reuse_within=60,
+                                clock=lambda: t[0])                         # window passed: runs again
+    assert later["batch_id"] != changed["batch_id"]
+    assert the_task(h)["taskPrivateNote"].count("Migration check") == 3
