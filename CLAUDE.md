@@ -43,6 +43,9 @@ Other read-only helper: `cd backend && uv run python -m scripts.rl_inspect` (Roc
 - Write the failing test first (TDD), then the code.
 - Before calling a feature done: run `make test` (and `make eval` if a prompt changed), then have the **`tester` subagent** (`.claude/agents/tester.md`) review it. Report its findings as they are.
 
+### Git
+- Never add `Co-Authored-By` (or any other attribution/trailer lines) to commit messages or PR descriptions.
+
 ### Secrets and safety
 - Never read, print, or commit `.env`. Only `.env.example` is committed.
 - Never log secrets. Mask phone numbers to the last 4 digits in logs/audit.
