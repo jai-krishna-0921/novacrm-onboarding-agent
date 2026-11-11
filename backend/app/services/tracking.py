@@ -344,7 +344,30 @@ class Tracker:
             self.store.upsert_run(rid, status="HANDED_OFF")
         audit(self.store, rid, AGENT, "handoff", output={"summary": summary},
               rationale="Go-Live complete and migration verified; summary on the handoff task, run handed off")
+        self._post_internal_handoff(run, summary)
         return "handed off to support"
+
+    def _post_internal_handoff(self, run: dict, summary: str) -> None:
+        """Best effort: also post the summary to the internal handoff channel so support sees it in Slack.
+        Never the customer-shared channel; a failure here doesn't undo the handoff (the note is in Rocketlane)."""
+        channel = self.settings.slack_handoff_channel
+        if not channel:
+            return
+        rid = run["id"]
+        if channel == run.get("slack_channel_id"):
+            audit(self.store, rid, AGENT, "handoff_slack", status="blocked",
+                  rationale="SLACK_HANDOFF_CHANNEL is the customer-shared channel; handoff not posted to Slack")
+            return
+        tier = (run.get("plan_tier") or "").capitalize()
+        text = (f":package: *Handoff to support: {run.get('customer_name')}* ({tier})\n"
+                f"Rocketlane project {run.get('rocketlane_project_id')}\n\n{summary}")
+        try:
+            self.registry.call(AGENT, "slack_post_message", {"channel_id": channel, "text": text}, run_id=rid,
+                               idempotency_key=f"{rid}:handoff-slack",
+                               rationale="handoff summary to the internal support channel (not the customer channel)")
+        except ToolFailed as e:
+            audit(self.store, rid, AGENT, "handoff_slack", status="failed",
+                  rationale=f"handoff is in Rocketlane; internal Slack post failed: {e.reason}")
 
     def handoff_facts(self, run: dict, tasks: list[dict]) -> dict:
         rule = tier_rules(self.settings)[Tier(run["plan_tier"])]

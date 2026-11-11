@@ -66,6 +66,7 @@ class Settings(BaseSettings):
 
     slack_bot_token: str = ""
     slack_internal_member_ids: str = ""
+    slack_handoff_channel: str = ""  # internal channel id (e.g. #cs-handoffs) that also gets handoff summaries
 
     # Dashboard/API login (app/auth.py). No password = every protected route answers 503 (fail closed).
     admin_username: str = "admin"

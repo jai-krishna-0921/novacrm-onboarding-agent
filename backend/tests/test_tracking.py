@@ -598,3 +598,52 @@ def test_periodic_sync_without_changes_adds_no_audit_rows(ent):
     t.sync(rid)
     t.sync(rid)
     assert len([r for r in h.store.audit_rows if r["run_id"] == rid]) == before
+
+
+# ---------------- internal #cs-handoffs channel ----------------
+
+def _with_handoff_channel(h, channel_id="CHANDOFF"):
+    h.world.slack.channels[channel_id] = {"name": "cs-handoffs", "topic": "", "members": [], "shared_invites": [],
+                                          "messages": []}
+    h.settings = h.settings.model_copy(update={"slack_handoff_channel": channel_id})
+    return h.world.slack.channels[channel_id]["messages"]
+
+
+def test_handoff_summary_is_also_posted_to_the_internal_handoff_channel(ent):
+    h, rid = ent
+    internal = _with_handoff_channel(h)
+    t = tracker(h)
+    finish_all_but_go_live(h, t, rid)
+    mark(h, phase="Go-Live")
+    t.sync(rid)
+    summary = h.store.get_tracking(rid)["handoff_summary"]
+    [post] = internal
+    assert "Acme Corp" in post and summary in post and "Enterprise" in post
+    customer = h.world.slack.channels[h.store.get_run(rid)["slack_channel_id"]]["messages"]
+    assert all(summary not in m for m in customer)  # never in the customer-shared channel
+    t.sync(rid)
+    assert len(internal) == 1  # once
+
+
+def test_handoff_channel_equal_to_the_customer_channel_is_refused(ent):
+    h, rid = ent
+    customer_channel = h.store.get_run(rid)["slack_channel_id"]
+    h.settings = h.settings.model_copy(update={"slack_handoff_channel": customer_channel})
+    t = tracker(h)
+    finish_all_but_go_live(h, t, rid)
+    mark(h, phase="Go-Live")
+    t.sync(rid)
+    summary = h.store.get_tracking(rid)["handoff_summary"]
+    assert all(summary not in m for m in slack_messages(h))
+    assert h.status(rid) == "HANDED_OFF"  # the Rocketlane handoff still happened
+
+
+def test_failed_internal_post_does_not_block_the_handoff(ent):
+    h, rid = ent
+    h.settings = h.settings.model_copy(update={"slack_handoff_channel": "CMISSING"})  # post will fail
+    t = tracker(h)
+    finish_all_but_go_live(h, t, rid)
+    mark(h, phase="Go-Live")
+    t.sync(rid)
+    assert h.status(rid) == "HANDED_OFF"
+    assert any(a["step"] == "handoff_slack" and a["status"] != "ok" for a in h.store.audit_rows if a["run_id"] == rid)

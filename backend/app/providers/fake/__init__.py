@@ -216,6 +216,8 @@ class FakeSlack:
         return SlackInviteSharedOut(status="sent")
 
     def post(self, channel_id: str, text: str) -> None:
+        if channel_id not in self.channels:
+            raise PermanentToolError("channel_not_found")  # same as the real Slack client
         self.channels[channel_id]["messages"].append(text)
 
 
