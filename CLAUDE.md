@@ -27,7 +27,14 @@ make test             # pytest, fake providers + fake LLM, no network, < 10 s
 make eval             # LLM evals against real Claude (costs tokens), exits non-zero under threshold
 make simulate SCENARIO=<name>   # full graph, PROVIDER_MODE=fake
 make lint             # ruff + mypy
+make api              # uvicorn on :8000 (PROVIDER_MODE from .env)
+make env-check        # which settings are set (never prints values)
+make preflight        # read-only checks of Postgres, Rocketlane, Anthropic, Retell, Slack, Gmail, tunnel
+make gmail-auth       # one-time OAuth -> GOOGLE_REFRESH_TOKEN
+make retell-setup     # create/update the Retell voice agent (ARGS="--agent-id ...")
+make eval ARGS="--suite transcripts --model claude-sonnet-5-5"   # model comparison
 ```
+Other read-only helper: `cd backend && uv run python -m scripts.rl_inspect` (Rocketlane users/projects/templates).
 
 ### Testing policy
 - `PROVIDER_MODE=fake` for all tests. Unit/integration tests **never** hit the network or a real LLM; the LLM is faked with scripted structured outputs.

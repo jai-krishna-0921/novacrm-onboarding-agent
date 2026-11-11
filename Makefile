@@ -11,3 +11,6 @@ simulate:  ; $(BE) PROVIDER_MODE=fake uv run python -m scripts.simulate $(SCENAR
 lint:      ; $(BE) uv run ruff check . && uv run mypy app
 api:       ; $(BE) uv run uvicorn app.main:app --reload --port 8000
 env-check: ; $(BE) uv run python -m scripts.env_check
+preflight: ; $(BE) uv run python -m scripts.preflight
+gmail-auth: ; $(BE) uv run python -m scripts.gmail_auth
+retell-setup: ; $(BE) uv run python -m scripts.retell_setup $(ARGS)
