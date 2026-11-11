@@ -586,3 +586,14 @@ def test_phase_completion_posts_the_full_progress_update(ent):
     tracker(h).sync(rid)
     [msg] = slack_messages(h)
     assert msg.startswith(progress_message("Kickoff")) and "tasks done" in msg and "Next up: *Data Migration*" in msg
+
+
+def test_periodic_sync_without_changes_adds_no_audit_rows(ent):
+    """A sync every 60 s used to add a tool-call row to the activity feed each time (live, Initech run)."""
+    h, rid = ent
+    t = tracker(h)
+    t.sync(rid)
+    before = len([r for r in h.store.audit_rows if r["run_id"] == rid])
+    t.sync(rid)
+    t.sync(rid)
+    assert len([r for r in h.store.audit_rows if r["run_id"] == rid]) == before

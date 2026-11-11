@@ -153,7 +153,7 @@ class Tracker:
         if prev and prev.get("handed_off_at"):
             return {"run_id": run_id, "changed": False, "actions": [], "skipped": "already handed off"}
         listed = self.registry.call(AGENT, "rocketlane_list_tasks", {"project_id": run["rocketlane_project_id"]},
-                                    run_id=run_id, rationale="periodic project sync")
+                                    run_id=run_id, rationale="periodic project sync", audit_success=False)
         tasks = sorted((t.model_dump() for t in listed.tasks), key=lambda t: t["task_id"])  # order-independent diff
         before = {t["task_id"]: t for t in (prev or {}).get("tasks") or []}
         changed = prev is None or sorted(map(_sig, tasks)) != sorted(map(_sig, prev.get("tasks") or []))

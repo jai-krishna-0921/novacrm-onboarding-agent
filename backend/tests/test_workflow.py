@@ -367,3 +367,10 @@ def test_ae_email_that_announces_no_deal_is_closed_quietly(settings, fields):
     assert h.world.gmail.sent == [] and h.world.voice.calls == [] and h.world.rocketlane.projects == []
     assert h.store.list_escalations() == []
     assert "not_a_deal" in audit_steps(h, rid)
+
+
+def test_tier_decision_audit_keeps_the_call_transcript(settings):
+    """The AE's words are the evidence for the tier; they were only in Retell on the first live runs."""
+    h, rid = run(settings, calls=[ENTERPRISE_CALL])
+    [row] = [r for r in h.store.audit_rows if r["run_id"] == rid and r["step"] == "decide_tier"]
+    assert row["input"]["transcript"].strip()

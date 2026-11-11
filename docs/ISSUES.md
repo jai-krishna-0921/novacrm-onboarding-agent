@@ -67,6 +67,10 @@ AUDIT = idempotency/concurrency audit, API = check against the live Rocketlane/R
 | 39 | Handoff check flagged dates that were in the data | Medium | EVAL | Fixed: any date in the input may be cited. |
 | 40 | Handoff check flagged "no failed checks" as a contradiction | Low | EVAL | Fixed: negations allowed (test). |
 | 61 | Everyday AE mail (meeting requests, lost or slipped deals) reached extraction and was escalated as "0 deals; needs a human to split" | Medium | Review (user question) | Fixed: `deal_count == 0` closes the run as `NOT_A_DEAL` (no reply, no escalation); `extract_v3` counts only signed deals; 8 new eval cases. 34/34. |
+| 63 | Call transcript not stored with the run: the AE's words (the evidence for the tier decision) are only in Retell | Medium | LIVE (Initech) | Fixed: transcript stored on the `decide_tier` audit entry (test). |
+| 64 | Every 60 s tracking sync writes a tool-call audit row even when nothing changed (noise in Activity) | Low | LIVE (Initech) | Fixed: routine read-only syncs go to tool_calls only; failures still audited (test). |
+| 65 | Agent's opening line was cut into fragments when the AE spoke over it | Low | LIVE (Initech) | Fixed: interruption sensitivity 0.5, shorter opener; also voice speed 0.95, responsiveness 0.9, Retell model claude-5.5-haiku for lower latency (agent v2). |
+| 66 | Rocketlane create timed out on the live run; reconciled by lookup (one project) | — | LIVE (Initech) | Works as designed (idempotency fix #45). |
 | 62 | Eval dataset had a 16-character Salesforce ID (invalid) | Low | EVAL | Fixed: test data. |
 | 41 | Handoff person-name check is heuristic (single first names not caught); 2 known false positives | Low | TR (tracking) | Open: costs one redraft, then the static template. |
 

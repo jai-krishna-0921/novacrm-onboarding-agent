@@ -46,7 +46,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--voice", default="11labs-Adrian")
     ap.add_argument("--agent-id", help="update this agent instead of creating a new one")
-    ap.add_argument("--voice-speed", type=float, default=0.8, help="0.5 (slow) .. 2.0 (fast); Retell default 1.0")
+    ap.add_argument("--model", default="claude-5.5-haiku", help="Retell LLM model for the call")
+    ap.add_argument("--voice-speed", type=float, default=0.95, help="0.5 (slow) .. 2.0 (fast); Retell default 1.0")
     ap.add_argument("--countries", default="US,IN", help="allowed outbound country codes, comma-separated")
     args = ap.parse_args()
 
@@ -57,9 +58,9 @@ def main() -> None:
 
     llm_cfg = dict(
         general_prompt=PROMPT,
-        begin_message="Hi {{ae_name}}. This is the NovaCRM onboarding assistant, calling about the "
-                      "{{customer_name}} deal. Do you have a moment?",
+        begin_message="Hi {{ae_name}}, this is NovaCRM onboarding, calling about the {{customer_name}} deal.",
         start_speaker="agent",
+        model=args.model,  # fast model: the call only needs one short question and a read-back
         general_tools=[{"type": "end_call", "name": "end_call", "description": "End the call when done."}],
     )
     agent_cfg = dict(
@@ -72,11 +73,10 @@ def main() -> None:
         end_call_after_silence_ms=15_000,
         webhook_url=f"{s.public_base_url.rstrip('/')}/webhooks/voice",
         language="en-US",
-        # Pacing: the first live call (2026-11-11) was too fast to follow. Slower voice, and wait a little
-        # longer before replying so the AE isn't cut off mid-sentence.
+        # Pacing (live calls 2026-11-11/12): 1.0 was too fast to follow, 0.8 too slow; 0.95 with quicker turn-taking.
         voice_speed=args.voice_speed,
-        responsiveness=0.6,
-        interruption_sensitivity=0.8,
+        responsiveness=0.9,          # reply soon after the AE stops (0.6 felt like a 1 s+ delay)
+        interruption_sensitivity=0.5,  # 0.8 let "yeah, hello?" chop the opener into fragments
         enable_dynamic_voice_speed=False,
     )
     if args.agent_id:

@@ -66,7 +66,9 @@ class ToolRegistry:
         self._tools[name] = _Spec(fn, input_model, output_model, reconcile, repeat_within)
 
     def call(self, agent: str, tool: str, args: dict, *, run_id: str,
-             idempotency_key: str | None = None, rationale: str = "") -> Any:
+             idempotency_key: str | None = None, rationale: str = "", audit_success: bool = True) -> Any:
+        """audit_success=False: routine read-only polls (e.g. the tracking sync) are recorded in tool_calls but
+        don't add an audit row on success; failures, blocks and reconciled outcomes are always audited."""
         safe_args = redact(args)
         if tool not in self.allowlist.get(agent, set()):
             self._audit(run_id, agent, tool, safe_args, None, "blocked",
@@ -95,7 +97,7 @@ class ToolRegistry:
             try:
                 result = spec.fn(parsed)
                 return self._success(spec, result, run_id, agent, tool, safe_args, attempt, started,
-                                     idempotency_key, rationale or "tool call succeeded")
+                                     idempotency_key, rationale or "tool call succeeded", audit=audit_success)
             except AmbiguousToolError as e:
                 error, maybe_sent = f"ambiguous: {e}", True
                 if spec.repeat_within != float("inf"):
@@ -129,11 +131,13 @@ class ToolRegistry:
                     f"gave up after {attempt} attempt(s)")
         raise ToolFailed(tool, error)
 
-    def _success(self, spec, result, run_id, agent, tool, safe_args, attempt, started, key, rationale) -> Any:
+    def _success(self, spec, result, run_id, agent, tool, safe_args, attempt, started, key, rationale,
+                 audit: bool = True) -> Any:
         out = spec.output_model.model_validate(result.model_dump())
         dumped = out.model_dump(mode="json")
         self._record(run_id, agent, tool, safe_args, dumped, "ok", attempt, started, key)
-        self._audit(run_id, agent, tool, safe_args, dumped, "ok", rationale)
+        if audit:
+            self._audit(run_id, agent, tool, safe_args, dumped, "ok", rationale)
         if key:
             self.store.put_idem(key, dumped)
         return out

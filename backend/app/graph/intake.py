@@ -152,7 +152,8 @@ def build_intake(d: Deps):
         decision = decide_tier(result, cross)
         d.audit(s, AGENT, "decide_tier", decision.rationale, status=decision.outcome.value,
                 input={"attempt": s["call_attempts"], "status": result.status,
-                       "provider_tier": result.plan_tier, "confirmed": result.confirmed},
+                       "provider_tier": result.plan_tier, "confirmed": result.confirmed,
+                       "transcript": result.transcript},  # the AE's words: evidence for the decision
                 output={"outcome": decision.outcome.value, "tier": decision.tier, "cross_check": cross})
         if decision.outcome == CallOutcome.CONFIRMED:
             return {"plan_tier": decision.tier.value, "tier_source": "ae_call",
