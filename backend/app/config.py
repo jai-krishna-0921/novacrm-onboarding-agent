@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import model_validator
+import re
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -58,6 +60,20 @@ class Settings(BaseSettings):
 
     slack_bot_token: str = ""
     slack_internal_member_ids: str = ""
+
+    @field_validator("retell_from_number", "demo_ae_phone")
+    @classmethod
+    def _e164(cls, v: str) -> str:
+        """Accept dashboard formatting ('+1 (510) 822-8650') but store strict E.164; Retell 404s otherwise."""
+        v = v.strip()
+        if not v:
+            return v
+        if not re.fullmatch(r"\+[\d\s().-]+", v):
+            raise ValueError("phone number must be E.164, e.g. +15108228650")
+        digits = re.sub(r"\D", "", v)
+        if not 8 <= len(digits) <= 15:
+            raise ValueError("phone number must have 8-15 digits")
+        return "+" + digits
 
     @model_validator(mode="after")
     def _migration_urls(self) -> "Settings":

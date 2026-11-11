@@ -249,3 +249,22 @@ def test_same_opportunity_linked_twice_is_not_ambiguous():
     body = ("https://novacrm.lightning.force.com/lightning/r/Opportunity/006Hs00001AbCdEIAV/view and "
             "https://novacrm.my.salesforce.com/006Hs00001AbCdE")
     assert opportunity_id_from_url(find_opportunity_url(body)) == "006Hs00001AbCdEIAV"
+
+
+# ---------------- phone number settings ----------------
+
+@pytest.mark.parametrize("raw", ["+1510822-8650", "+1 (510) 822-8650", " +15108228650 ", "+1.510.822.8650"])
+def test_phone_settings_are_normalised_to_e164(raw):
+    """A dashboard-formatted number in .env ('+1510822-8650') made Retell 404 every call (live, 2026-11-11)."""
+    from app.config import Settings
+    s = Settings(_env_file=None, retell_from_number=raw, demo_ae_phone=raw)
+    assert s.retell_from_number == "+15108228650" and s.demo_ae_phone == "+15108228650"
+
+
+@pytest.mark.parametrize("raw", ["5108228650", "+1-800-FLOWERS", "++15108228650"])
+def test_unusable_phone_settings_are_rejected(raw):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, retell_from_number=raw)

@@ -42,6 +42,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--voice", default="11labs-Adrian")
     ap.add_argument("--agent-id", help="update this agent instead of creating a new one")
+    ap.add_argument("--countries", default="US,IN", help="allowed outbound country codes, comma-separated")
     args = ap.parse_args()
 
     s = Settings()
@@ -72,6 +73,14 @@ def main() -> None:
         agent = client.agent.update(args.agent_id, **agent_cfg)
     else:
         agent = client.agent.create(**agent_cfg)
+    # Phone calls run a PUBLISHED agent version bound to the number; an unpublished draft or an unbound
+    # number made create-phone-call 404 on the first live run (2026-11-11).
+    client.agent.publish(agent.agent_id, version=agent.version)
+    if s.retell_from_number:
+        client.phone_number.update(s.retell_from_number,
+                                   outbound_agents=[{"agent_id": agent.agent_id, "weight": 1.0}],
+                                   allowed_outbound_country_list=args.countries.split(","))
+        print(f"number ***{s.retell_from_number[-4:]} -> agent (outbound to {args.countries})")
     print(f"RETELL_AGENT_ID={agent.agent_id}")
     print(f"(llm_id={llm.llm_id}; webhook -> {agent_cfg['webhook_url']})")
 
