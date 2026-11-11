@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.container import Container
+from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
 from app.services.audit import audit
 from app.tools.registry import PermanentToolError
@@ -44,7 +45,9 @@ def create_app(c: Container | None = None) -> FastAPI:
                 k.store.set_kv(CURSOR, k.inbox.current_history_id())
                 return
             try:
-                emails, new_cursor = k.inbox.new_deal_emails(cursor)
+                # Deal-like subject OR any mail from a known AE (AEs don't always write "Closed Won").
+                emails, new_cursor = k.inbox.new_deal_emails(
+                    cursor, lambda e: bool(DEAL_SUBJECT.search(e.subject)) or k.store.lookup_ae(e.sender) is not None)
             except PermanentToolError as e:
                 if "history_too_old" in str(e):
                     log.warning("gmail history cursor too old; resetting to now")

@@ -279,3 +279,11 @@ def test_agents_have_disjoint_least_privilege_allowlists():
     assert not ALLOWLIST["comms"] & {"rocketlane_create_project", "voice_start_call", "gmail_reply"}
     assert not ALLOWLIST["intake"] & {"slack_create_channel", "slack_post_message"}
     assert "rocketlane_create_project" in ALLOWLIST["intake"]
+
+
+def test_unknown_sender_is_stopped_before_any_llm_call_or_reply(settings):
+    email = EMAIL.model_copy(update={"sender": "stranger@evil.example"})
+    h, rid = run(settings, email=email, fields={**GOOD, "customer_email": None})
+    assert h.status(rid) == "ESCALATED"
+    assert h.llm.calls == {}, "LLM must not run on mail from unknown senders"
+    assert h.world.gmail.sent == [], "never auto-reply to unknown senders"

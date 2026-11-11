@@ -23,7 +23,19 @@ def build_intake(d: Deps):
             return "check_duplicate"
         if s.get("ae") and not s.get("plan_tier"):
             return "place_call"
-        return "extract_fields"
+        return "extract_fields" if s.get("sender_ok") else "check_sender"
+
+    def check_sender(s: OnboardingState) -> dict:
+        # Before any LLM call or reply: only active AEs can trigger onboarding (no auto-replies to outsiders).
+        sender = s["email"]["sender"]
+        try:
+            who = d.registry.call(AGENT, "ae_lookup", {"email": sender}, run_id=s["run_id"])
+        except ToolFailed as e:
+            return d.escalate(s, AGENT, f"AE directory unavailable: {e.reason}", "system")
+        if not (who.found and who.active):
+            return d.escalate(s, AGENT, f"Email sender {sender} is not an active AE in the directory", "input")
+        d.audit(s, AGENT, "check_sender", f"sender {sender} is an active AE")
+        return {"sender_ok": True}
 
     def extract_fields(s: OnboardingState) -> dict:
         email = s["email"]
@@ -70,14 +82,9 @@ def build_intake(d: Deps):
         return d.set_status(s, "AWAITING_CLARIFICATION")
 
     def lookup_ae(s: OnboardingState) -> dict:
-        sender = s["email"]["sender"]
         ae_email = s["extracted"]["ae_email"]
         try:
-            who = d.registry.call(AGENT, "ae_lookup", {"email": sender}, run_id=s["run_id"])
-            if not (who.found and who.active):
-                return d.escalate(s, AGENT, f"Email sender {sender} is not an active AE in the directory", "input")
-            ae = who if ae_email.casefold() == sender.casefold() else \
-                d.registry.call(AGENT, "ae_lookup", {"email": ae_email}, run_id=s["run_id"])
+            ae = d.registry.call(AGENT, "ae_lookup", {"email": ae_email}, run_id=s["run_id"])
         except ToolFailed as e:
             return d.escalate(s, AGENT, f"AE directory unavailable: {e.reason}", "system")
         if not (ae.found and ae.active and ae.phone):
@@ -175,10 +182,11 @@ def build_intake(d: Deps):
         return END if s.get("escalation_reason") else None
 
     g = StateGraph(OnboardingState)
-    for fn in (extract_fields, validate, request_clarification, lookup_ae, place_call, await_call,
+    for fn in (check_sender, extract_fields, validate, request_clarification, lookup_ae, place_call, await_call,
                interpret_call, check_duplicate, create_project):
         g.add_node(fn.__name__, fn)
-    g.add_conditional_edges(START, entry, ["extract_fields", "place_call", "check_duplicate"])
+    g.add_conditional_edges(START, entry, ["check_sender", "extract_fields", "place_call", "check_duplicate"])
+    g.add_conditional_edges("check_sender", lambda s: escalated(s) or "extract_fields", [END, "extract_fields"])
     g.add_edge("extract_fields", "validate")
     g.add_conditional_edges("validate", lambda s: escalated(s) or (
         "request_clarification" if s["issues"] else "lookup_ae"),

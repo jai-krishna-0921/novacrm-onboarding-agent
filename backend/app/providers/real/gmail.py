@@ -3,6 +3,7 @@
 import base64
 import html
 import re
+from collections.abc import Callable
 from email.message import EmailMessage
 from email.utils import parseaddr
 from typing import Any
@@ -94,8 +95,11 @@ class GmailClient:
         return self._exec(self.service.users().watch(
             userId="me", body={"topicName": topic, "labelIds": ["INBOX"], "labelFilterBehavior": "INCLUDE"}))
 
-    def new_deal_emails(self, start_history_id: str) -> tuple[list[InboundEmail], str]:
-        """Messages added to INBOX since the cursor, filtered to deal notifications. Returns (emails, new cursor)."""
+    def new_deal_emails(self, start_history_id: str, is_relevant: Callable[[InboundEmail], bool] | None = None
+                        ) -> tuple[list[InboundEmail], str]:
+        """Messages added to INBOX since the cursor, excluding our own mail and filtered by `is_relevant`
+        (default: deal-like subject). Returns (emails, new cursor)."""
+        is_relevant = is_relevant or (lambda e: bool(DEAL_SUBJECT.search(e.subject)))
         ids: list[str] = []
         cursor, token = start_history_id, None
         while True:
@@ -113,6 +117,6 @@ class GmailClient:
         out = []
         for mid in ids:
             e = to_inbound(self._exec(self.service.users().messages().get(userId="me", id=mid, format="full")))
-            if e.sender != self.self_address and DEAL_SUBJECT.search(e.subject):
+            if e.sender != self.self_address and is_relevant(e):
                 out.append(e)
         return out, cursor

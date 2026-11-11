@@ -161,3 +161,13 @@ def test_own_replies_are_ignored():
     history = {"historyId": "901", "history": [{"messagesAdded": [{"message": {"id": "18c1"}}]}]}
     g = GmailClient(service=FakeService(history, {"18c1": mine}), self_address="cs@novacrm.example")
     assert g.new_deal_emails("800")[0] == []
+
+
+def test_custom_relevance_predicate_keeps_ae_mail_with_non_deal_subject():
+    ae_mail = {**MSG, "payload": {**MSG["payload"], "headers": [
+        {"name": "From", "value": "jai@novacrm.example"}, {"name": "Subject", "value": "RE: RE: quarter end"}]}}
+    history = {"historyId": "902", "history": [{"messagesAdded": [{"message": {"id": "18c1"}}]}]}
+    g = GmailClient(service=FakeService(history, {"18c1": ae_mail}), self_address="cs@novacrm.example")
+    assert g.new_deal_emails("800")[0] == []  # default: subject filter only
+    emails, _ = g.new_deal_emails("800", is_relevant=lambda e: e.sender == "jai@novacrm.example")
+    assert [e.message_id for e in emails] == ["18c1"]

@@ -25,7 +25,7 @@ class FakeInbox:
     def current_history_id(self):
         return "100"
 
-    def new_deal_emails(self, start_history_id):
+    def new_deal_emails(self, start_history_id, is_relevant=None):
         self.cursor_seen.append(start_history_id)
         out, self.emails = self.emails, []
         return out, "200"

@@ -17,6 +17,7 @@ class OnboardingState(TypedDict, total=False):
     email: dict                 # InboundEmail.model_dump()
     extracted: dict             # DealFields.model_dump()
     issues: list[str]
+    sender_ok: bool             # email sender verified as an active AE
     ae: dict                    # AeLookupOut of the AE to call
     call_attempts: int
     provider_call_id: str
