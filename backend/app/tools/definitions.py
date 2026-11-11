@@ -22,6 +22,15 @@ ALLOWLIST: dict[str, set[str]] = {
 
 # ---- I/O models ----
 
+class InboundEmail(BaseModel):
+    message_id: str          # Gmail message id (dedupe key)
+    thread_id: str
+    rfc_message_id: str      # RFC 822 Message-ID header, for In-Reply-To
+    sender: str
+    subject: str
+    body: str
+
+
 class AeLookupIn(BaseModel):
     email: str
 

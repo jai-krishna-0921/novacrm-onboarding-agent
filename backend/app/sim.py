@@ -8,7 +8,6 @@ import json
 import re
 
 from langgraph.checkpoint.memory import InMemorySaver
-from pydantic import BaseModel
 
 from app.config import Settings
 from app.graph.root import build_graph
@@ -17,16 +16,7 @@ from app.llm.schemas import DealFields, TranscriptReading, WelcomeDraft
 from app.providers.fake import FakeWorld
 from app.services.runner import Runner
 from app.services.store import MemoryStore, now
-from app.tools.definitions import build_registry
-
-
-class InboundEmail(BaseModel):
-    message_id: str          # Gmail message id (dedupe key)
-    thread_id: str
-    rfc_message_id: str      # RFC 822 Message-ID header, for In-Reply-To
-    sender: str
-    subject: str
-    body: str
+from app.tools.definitions import InboundEmail, build_registry  # noqa: F401 (re-export)
 
 
 class FakeLLM:
