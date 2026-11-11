@@ -10,3 +10,4 @@ eval:      ; $(BE) uv run python -m evals.run_evals
 simulate:  ; $(BE) PROVIDER_MODE=fake uv run python -m scripts.simulate $(SCENARIO)
 lint:      ; $(BE) uv run ruff check . && uv run mypy app
 api:       ; $(BE) uv run uvicorn app.main:app --reload --port 8000
+env-check: ; $(BE) uv run python -m scripts.env_check

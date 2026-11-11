@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     rocketlane_csm_enterprise: str = ""
     rocketlane_csm_growth: str = ""
 
+    demo_ae_name: str = ""
+    demo_ae_email: str = ""
+    demo_ae_phone: str = ""
+
     slack_bot_token: str = ""
     slack_internal_member_ids: str = ""
 
