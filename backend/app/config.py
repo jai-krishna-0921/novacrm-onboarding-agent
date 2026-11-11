@@ -1,10 +1,9 @@
 """Settings and the CS-owned tier rules. Tier mapping lives here, never in prompts."""
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
-
-import re
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
