@@ -20,6 +20,9 @@ services:
     env_file: [app.env]
     environment:  # overrides app.env
       DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@postgres:5432/app
+      # Migration-check demo DBs; created + seeded by `python -m app.db.seed` on start (init scripts don't rerun).
+      MIG_SOURCE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@postgres:5432/mig_source
+      MIG_DEST_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@postgres:5432/mig_dest
       PUBLIC_BASE_URL: https://${DOMAIN:?}
       PROVIDER_MODE: real
     depends_on:

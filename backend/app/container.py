@@ -17,6 +17,8 @@ class Container:
     inbox: Any = None            # GmailClient-like: current_history_id(), new_deal_emails(cursor), watch(topic)
     start_poller: bool = True
     voice: Any = None            # RetellVoice-like: get_call(call_id) -> call object, for webhook reconciliation
+    registry: Any = None         # ToolRegistry, for actions taken outside the graph (migration check)
+    migration_contacts: Any = None  # () -> (source_rows, dest_rows) for the migration check
 
 
 class DbDirectory:
@@ -69,6 +71,11 @@ def build_container(s: Settings) -> Container:
     pool = ConnectionPool(s.database_url.replace("+psycopg", ""), max_size=10, open=True,
                           kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
     checkpointer = PostgresSaver(pool)
-    deps = Deps(s, store, build_registry(store, providers), LangChainLLM(store, s.llm_model, s.anthropic_api_key))
+    from app.services.migration_check import load_contacts
+
+    registry = build_registry(store, providers)
+    deps = Deps(s, store, registry, LangChainLLM(store, s.llm_model, s.anthropic_api_key))
     graph = build_graph(deps, checkpointer)
-    return Container(settings=s, store=store, runner=Runner(graph, store), inbox=inbox, voice=voice)
+    return Container(settings=s, store=store, runner=Runner(graph, store), inbox=inbox, voice=voice,
+                     registry=registry,
+                     migration_contacts=lambda: (load_contacts(s.mig_source_url), load_contacts(s.mig_dest_url)))

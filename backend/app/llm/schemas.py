@@ -16,6 +16,11 @@ class DealFields(BaseModel):
     notes: str | None = Field(None, description="Other onboarding-relevant details, one short sentence")
 
 
+class ExtractedDeal(DealFields):
+    """DealFields plus what code (never the LLM) pulls from the email: the LLM schema stays unchanged."""
+    opportunity_url: str | None = None
+
+
 class TranscriptReading(BaseModel):
     plan_tier: Literal["enterprise", "growth", "unclear"]
     ae_confirmed: bool = Field(description="True only if the AE explicitly confirmed the tier after read-back")

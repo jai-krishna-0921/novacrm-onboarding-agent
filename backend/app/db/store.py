@@ -65,6 +65,11 @@ escalations = Table(
 kv = Table("kv", metadata, Column("key", String, primary_key=True), Column("value", Text))
 ae_directory = Table("ae_directory", metadata, Column("email", String, primary_key=True), Column("name", String),
                      Column("phone", String), Column("active", Boolean, nullable=False, default=True))
+migration_checks = Table(
+    "migration_checks", metadata, Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("run_id", String, index=True), Column("batch_id", String), Column("ts", String),
+    Column("check_name", String), Column("passed", Boolean, nullable=False), Column("details", J),
+)
 
 RUN_FIELDS = {c.name for c in runs.columns} - {"id", "seq", "created_at", "updated_at"}
 assert RUN_FIELDS == SHARED_RUN_FIELDS, f"run columns drifted from MemoryStore: {RUN_FIELDS ^ SHARED_RUN_FIELDS}"
@@ -122,6 +127,12 @@ class PgStore:
 
     def list_llm_calls(self, run_id: str) -> list[dict]:
         return self._list(llm_calls, run_id)
+
+    def add_migration_check(self, row: dict) -> None:
+        self._exec(insert(migration_checks).values(**row))
+
+    def list_migration_checks(self, run_id: str) -> list[dict]:
+        return self._list(migration_checks, run_id)
 
     # runs
     def upsert_run(self, run_id: str, **fields: Any) -> None:

@@ -9,7 +9,7 @@ from datetime import datetime
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.container import Container
@@ -17,12 +17,19 @@ from app.guardrails.decision import CallResult
 from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
 from app.services.audit import audit
+from app.services.migration_check import MigrationDataUnavailable, run_migration_check
 from app.tools.registry import PermanentToolError
 
 log = logging.getLogger("onboarding")
 CURSOR = "gmail_history_id"
 RECONCILE_AFTER = 180       # seconds without a webhook before we ask Retell directly
 CALL_RESULT_TIMEOUT = 900   # seconds after which a call with no usable result counts as a failed attempt
+
+
+class Dismissal(BaseModel):
+    """A CSM accepting a migration-check failure (e.g. a known junk row). Both fields are required and audited."""
+    reason: str = Field(min_length=1, pattern=r"\S")
+    by: str = Field(min_length=1, pattern=r"\S")
 
 
 class Resolution(BaseModel):
@@ -218,6 +225,7 @@ def create_app(c: Container | None = None) -> FastAPI:
         llm = k.store.list_llm_calls(run_id)
         return {"run": run, "pending": k.runner.pending(run_id), "audit": k.store.list_audit(run_id),
                 "tool_calls": k.store.list_tool_calls(run_id),
+                "migration_checks": k.store.list_migration_checks(run_id),
                 "llm": {"calls": len(llm), "input_tokens": sum(r["input_tokens"] for r in llm),
                         "output_tokens": sum(r["output_tokens"] for r in llm),
                         "cost_usd": round(sum(float(r["cost_usd"]) for r in llm), 6), "by_node": llm}}
@@ -235,6 +243,37 @@ def create_app(c: Container | None = None) -> FastAPI:
             except ValueError as e:
                 raise HTTPException(422, str(e)) from e
         return {"ok": True, "status": k.store.get_run(run_id)["status"]}
+
+    @app.post("/runs/{run_id}/migration-check")
+    def migration_check(run_id: str):
+        k = container()
+        run = k.store.get_run(run_id)
+        if not run:
+            raise HTTPException(404, "run not found")
+        if not run.get("rocketlane_project_id"):
+            raise HTTPException(404, "run has no Rocketlane project yet")
+        with lock:
+            try:
+                return run_migration_check(k.store, k.registry, k.migration_contacts, run_id)
+            except MigrationDataUnavailable as e:
+                raise HTTPException(503, f"migration databases unreachable: {e}") from e
+
+    @app.post("/runs/{run_id}/migration-escalation/dismiss")
+    def dismiss_migration_escalation(run_id: str, body: Dismissal):
+        """Close the open migration escalation without a passing re-run. Never touches the Rocketlane task:
+        the evidence note stays, and a person still decides whether to tick "Migration verified"."""
+        k = container()
+        with lock:
+            open_esc = [e for e in k.store.list_escalations("open")
+                        if e["run_id"] == run_id and e.get("kind") == "migration"]
+            if not open_esc:
+                raise HTTPException(404, "no open migration escalation for this run")
+            for e in open_esc:
+                k.store.upsert_escalation(e["key"], dict(status="dismissed", resolved_by=body.by,
+                                                         resolution={"action": "dismiss", "note": body.reason}))
+            audit(k.store, run_id, "migration", "dismiss_migration_escalation",
+                  input={"by": body.by}, rationale=f"dismissed by {body.by}: {body.reason}")
+        return {"ok": True, "dismissed": [e["key"] for e in open_esc]}
 
     @app.post("/admin/gmail/watch")
     def gmail_watch():

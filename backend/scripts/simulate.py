@@ -13,7 +13,9 @@ from app.sim import FakeLLM, Harness, InboundEmail
 FIELDS = dict(customer_name="Acme Corp", customer_contact_name="Dana Lee", customer_email="dana@acme.example",
               ae_name="Jai Krishna", ae_email="jai@novacrm.example", opportunity_id="006Hs00001AbCdEIAV")
 EMAIL = InboundEmail(message_id="gm-1", thread_id="th-1", rfc_message_id="<m1@mail>", sender="jai@novacrm.example",
-                     subject="Closed Won: Acme Corp", body="We just closed Acme Corp ...")
+                     subject="Closed Won: Acme Corp", sender_authenticated=True,
+                     body="We just closed Acme Corp ...\n"
+                          "Opp: https://novacrm.lightning.force.com/lightning/r/Opportunity/006Hs00001AbCdEIAV/view")
 ENT = dict(status="connected", plan_tier="enterprise", confirmed=True, transcript="AE: Enterprise.\nAE: Yes.")
 GRO = dict(status="connected", plan_tier="growth", confirmed=True, transcript="AE: Growth.\nAE: Yes.")
 NOPE = dict(status="no_answer", transcript="")

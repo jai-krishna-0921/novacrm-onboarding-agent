@@ -36,7 +36,10 @@ def extract_text(payload: dict) -> str:
     walk(payload)
     if plain:
         return "\n".join(plain).strip()
-    text = re.sub(r"<(br|/p|/div|/li)[^>]*>", "\n", "\n".join(rich), flags=re.I)
+    text = "\n".join(rich)
+    # Keep link targets (e.g. a Salesforce link behind the word "Opportunity"): <a href="u">t</a> -> "t (u)".
+    text = re.sub(r"""<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>""", r"\2 (\1)", text, flags=re.I | re.S)
+    text = re.sub(r"<(br|/p|/div|/li)[^>]*>", "\n", text, flags=re.I)
     text = html.unescape(re.sub(r"<[^>]+>", "", text))
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
@@ -45,14 +48,62 @@ def _headers(msg: dict) -> dict[str, str]:
     return {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
 
 
+TRUSTED_AUTHSERV_ID = "mx.google.com"
+
+
+def _aligned(signing_domain: str, from_domain: str) -> bool:
+    return bool(signing_domain) and (from_domain == signing_domain or from_domain.endswith("." + signing_domain))
+
+
+def sender_auth(auth_results: list[str], sender: str) -> tuple[bool, str]:
+    """Gmail's verdict on the From address, from `Authentication-Results` header values (top-most first).
+
+    Only headers stamped by Gmail's own MTA (authserv-id mx.google.com) count; anything else could have
+    been written by the sender. Gmail prepends its header, so the top-most trusted one wins over any
+    copy injected further down. Authenticated = dmarc=pass for the From domain, or dkim=pass with a
+    signing domain equal to the From domain or a parent of it. SPF alone is never enough (it checks the
+    envelope sender, not From).
+    """
+    from_domain = sender.rpartition("@")[2].strip().lower()
+    if not from_domain:
+        return False, "no From address"
+    for value in auth_results:
+        clean = re.sub(r"\([^()]*\)", " ", value)  # drop RFC 5322 comments
+        authserv, *results = [p.strip() for p in clean.split(";")]
+        if (authserv.split() or [""])[0].lower() != TRUSTED_AUTHSERV_ID:
+            continue
+        verdicts = []
+        for r in results:
+            tokens = r.split()
+            if not tokens or "=" not in tokens[0]:
+                continue
+            method, _, result = tokens[0].lower().partition("=")
+            props = {k: v for k, _, v in (t.lower().partition("=") for t in tokens[1:])}
+            verdicts.append(f"{method}={result}")
+            if result != "pass":
+                continue
+            if method == "dmarc" and props.get("header.from") == from_domain:
+                return True, f"dmarc=pass header.from={from_domain}"
+            signer = props.get("header.d") or props.get("header.i", "").rpartition("@")[2]
+            if method == "dkim" and _aligned(signer, from_domain):
+                return True, f"dkim=pass d={signer} aligned with {from_domain}"
+        return False, f"not authenticated for {from_domain or '?'}: {' '.join(verdicts) or 'no results'}"[:200]
+    return False, f"no Authentication-Results from {TRUSTED_AUTHSERV_ID}"
+
+
 def to_inbound(msg: dict) -> InboundEmail:
     h = _headers(msg)
+    sender = parseaddr(h.get("from", ""))[1].lower()
+    authenticated, auth_detail = sender_auth(
+        [x["value"] for x in msg.get("payload", {}).get("headers", []) if x["name"].lower() == "authentication-results"],
+        sender)
     subject = h.get("subject", "")
     auto = (h.get("auto-submitted", "no").lower() != "no" or "x-autoreply" in h or "x-autorespond" in h
             or h.get("precedence", "").lower() in ("bulk", "auto_reply", "junk") or bool(AUTO_SUBJECT.search(subject)))
     return InboundEmail(message_id=msg["id"], thread_id=msg["threadId"],
-                        rfc_message_id=h.get("message-id", ""), sender=parseaddr(h.get("from", ""))[1].lower(),
-                        subject=subject, body=extract_text(msg.get("payload", {})), auto_reply=auto)
+                        rfc_message_id=h.get("message-id", ""), sender=sender,
+                        subject=subject, body=extract_text(msg.get("payload", {})), auto_reply=auto,
+                        sender_authenticated=authenticated, auth_detail=auth_detail)
 
 
 def build_reply(a: GmailReplyIn, sender: str) -> dict:

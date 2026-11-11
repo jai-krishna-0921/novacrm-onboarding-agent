@@ -61,6 +61,7 @@ class FakeRocketlane:
                  existing: list[dict] | None = None, search_lag: int = 0):
         self.failures_left, self.timeout_after_create = failures, timeout_after_create
         self.projects: list[dict] = list(existing or [])
+        self.task_updates: list[dict] = []  # PUT /tasks bodies, so tests can prove no status is ever sent
         self._ids = itertools.count(1001)
         # Rocketlane search is eventually consistent ("a couple of seconds"): a new project stays
         # invisible to the next `search_lag` find calls.
@@ -84,7 +85,11 @@ class FakeRocketlane:
         if self.failures_left > 0:
             self.failures_left -= 1
             raise TransientToolError("rocketlane 503")
-        project = {**payload, "projectId": next(self._ids)}
+        pid = next(self._ids)
+        # Both tier templates contain a "Migration verified" task owned by the PM placeholder.
+        project = {**payload, "projectId": pid,
+                   "tasks": [{"taskId": pid * 100 + 1, "taskName": "Migration verified (validation checks passed)",
+                              "status": {"value": 1, "label": "To do"}, "taskPrivateNote": ""}]}
         self.projects.append(project)
         if self.search_lag:
             self._hidden[project["projectId"]] = self.search_lag
@@ -92,6 +97,27 @@ class FakeRocketlane:
             self.timeout_after_create = False
             raise AmbiguousToolError("read timeout after request was sent")
         return str(project["projectId"])
+
+    def find_task(self, project_id: str, name_prefix: str) -> str | None:
+        want = name_prefix.lower()
+        for p in self.projects:
+            if str(p["projectId"]) == str(project_id):
+                hits = [t for t in p.get("tasks", []) if t["taskName"].lower().startswith(want)]
+                if len(hits) > 1:
+                    raise PermanentToolError(f"{len(hits)} tasks named {name_prefix!r}")
+                return str(hits[0]["taskId"]) if hits else None
+        raise PermanentToolError(f"404: project {project_id} not found")
+
+    def append_task_note(self, task_id: str, note_html: str, marker: str) -> None:
+        for p in self.projects:
+            for t in p.get("tasks", []):
+                if str(t["taskId"]) == str(task_id):
+                    if marker not in t["taskPrivateNote"]:
+                        update = {"taskPrivateNote": t["taskPrivateNote"] + note_html}  # same body as the real PUT
+                        self.task_updates.append(update)
+                        t.update(update)
+                    return
+        raise PermanentToolError(f"404: task {task_id} not found")
 
 
 class FakeSlack:

@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Tier(StrEnum):
@@ -16,6 +18,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/app"
+    # Migration-validation source/destination (plan §12). Default: databases mig_source / mig_dest on the
+    # same server as DATABASE_URL.
+    mig_source_url: str = ""
+    mig_dest_url: str = ""
     public_base_url: str = ""
     provider_mode: Literal["fake", "real"] = "fake"
 
@@ -52,6 +58,20 @@ class Settings(BaseSettings):
 
     slack_bot_token: str = ""
     slack_internal_member_ids: str = ""
+
+    @model_validator(mode="after")
+    def _migration_urls(self) -> "Settings":
+        def sibling(db: str) -> str:
+            return make_url(self.database_url).set(database=db).render_as_string(hide_password=False)
+
+        self.mig_source_url = _psycopg(self.mig_source_url or sibling("mig_source"))
+        self.mig_dest_url = _psycopg(self.mig_dest_url or sibling("mig_dest"))
+        return self
+
+
+def _psycopg(url: str) -> str:
+    """`postgresql://` would pick psycopg2, which isn't installed; use psycopg 3."""
+    return "postgresql+psycopg://" + url.removeprefix("postgresql://") if url.startswith("postgresql://") else url
 
 
 @dataclass(frozen=True)

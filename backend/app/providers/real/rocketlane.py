@@ -80,6 +80,31 @@ class RocketlaneClient:
                 return str(p["projectId"])
         return None
 
+    def find_task(self, project_id: str, name_prefix: str) -> str | None:
+        """GET /tasks?projectId.eq=&taskName.cn= (docs/reference/rocketlane-api.md §6). `cn` is a substring
+        match, so keep only names that START with the prefix; refuse to guess between two."""
+        hits = self._get_all("/tasks", **{"projectId.eq": project_id, "taskName.cn": name_prefix})
+        want = name_prefix.strip().lower()
+        matches = [t for t in hits if str(t.get("taskName", "")).strip().lower().startswith(want)]
+        if len(matches) > 1:
+            raise PermanentToolError(f"{len(matches)} tasks named {name_prefix!r} in project {project_id}")
+        return str(matches[0]["taskId"]) if matches else None
+
+    def append_task_note(self, task_id: str, note_html: str, marker: str) -> None:
+        """Append evidence to the task's private (team-only) note. The public API has no comment endpoint
+        (rocketlane-api.md §6), so the note is the documented fallback.
+
+        GET /tasks/{id}?includeFields=taskPrivateNote and PUT /tasks/{id} {taskPrivateNote} are both on
+        developer.rocketlane.com (get-task, update-task; checked 2026-11-11). UNVERIFIED against the live API:
+        that a PUT with only taskPrivateNote leaves every other field (status, dates, assignees) unchanged.
+        The body never carries status/progress: closing the task is a human's job.
+        """
+        current = self._request("GET", f"/tasks/{task_id}", params={"includeFields": "taskPrivateNote"})
+        existing = current.get("taskPrivateNote") or ""
+        if marker in existing:
+            return  # this batch was already written (e.g. an ambiguous PUT being retried)
+        self._request("PUT", f"/tasks/{task_id}", json={"taskPrivateNote": existing + note_html}, write=True)
+
     def check_templates(self, configured: dict[str, str]) -> list[str]:
         """Preflight: every configured template ID must exist and be a PROJECT template."""
         found = {str(t["templateId"]): t for t in self._get_all("/templates")}

@@ -15,6 +15,9 @@ ALLOWED = {
     "input": {"retry", "cancel"},
     "duplicate": {"retry", "cancel"},
     "system": {"retry", "cancel"},
+    # Raised outside the graph by the migration checker (services/migration_check.py) after the project exists.
+    # The CSM gets the data fixed and re-runs the check; a passing re-run resolves it. Never a tier change.
+    "migration": {"retry"},
 }
 
 

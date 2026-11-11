@@ -92,6 +92,17 @@ def test_ae_directory(store):
     assert store.lookup_ae("ghost@x.example") is None
 
 
+def test_migration_checks_roundtrip_per_run(store):
+    for name, ok in (("record_count", True), ("duplicates", False)):
+        store.add_migration_check(dict(run_id="r1", batch_id="b1", ts="t", check_name=name, passed=ok,
+                                       details={"expected": 0, "actual": int(not ok), "sample_ids": [23]}))
+    store.add_migration_check(dict(run_id="r2", batch_id="b2", ts="t", check_name="duplicates", passed=True,
+                                   details={}))
+    rows = store.list_migration_checks("r1")
+    assert [(r["check_name"], r["passed"]) for r in rows] == [("record_count", True), ("duplicates", False)]
+    assert rows[1]["details"]["sample_ids"] == [23] and rows[0]["batch_id"] == "b1"
+
+
 def test_list_runs_newest_first(store):
     store.upsert_run("r1", status="COMPLETED")
     store.upsert_run("r2", status="RECEIVED")

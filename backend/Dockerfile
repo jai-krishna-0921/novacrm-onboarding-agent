@@ -7,4 +7,5 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
 RUN uv sync --frozen --no-dev
 # One worker on purpose: the Gmail poller and the scheduler tick run inside the app process.
-CMD ["sh", "-c", "alembic upgrade head && python -m app.db.seed && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers"]
+# No uvicorn access log: Caddy logs requests with the push token redacted.
+CMD ["sh", "-c", "alembic upgrade head && python -m app.db.seed && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --no-access-log"]

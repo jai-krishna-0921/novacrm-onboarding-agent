@@ -17,6 +17,8 @@ ALLOWLIST: dict[str, set[str]] = {
     "comms": {"slack_create_channel", "slack_set_topic", "slack_invite_internal",
               "slack_invite_shared", "slack_post_message"},
     "root": set(),
+    # Migration validation (plan §12): may read tasks and append evidence; it has no tool that changes status.
+    "migration": {"rocketlane_find_task", "rocketlane_add_task_note"},
 }
 
 
@@ -30,6 +32,8 @@ class InboundEmail(BaseModel):
     subject: str
     body: str
     auto_reply: bool = False  # out-of-office / Auto-Submitted mail: never starts a run
+    sender_authenticated: bool = False  # Gmail's DMARC/aligned-DKIM verdict for the From domain; fail closed
+    auth_detail: str = ""
 
 
 class AeLookupIn(BaseModel):
@@ -126,6 +130,21 @@ class SlackPostIn(BaseModel):
     text: str
 
 
+class RlFindTaskIn(BaseModel):
+    project_id: str
+    name_prefix: str
+
+
+class RlFindTaskOut(BaseModel):
+    task_id: str | None = None
+
+
+class RlTaskNoteIn(BaseModel):
+    task_id: str
+    note_html: str
+    marker: str  # unique per check batch; the provider skips the append if it is already in the note
+
+
 class Ok(BaseModel):
     ok: bool = True
 
@@ -165,6 +184,8 @@ class Voice(Protocol):
 class Rocketlane(Protocol):
     def find_project(self, customer_name: str, external_reference_id: str) -> str | None: ...
     def create_project(self, payload: dict) -> str: ...
+    def find_task(self, project_id: str, name_prefix: str) -> str | None: ...
+    def append_task_note(self, task_id: str, note_html: str, marker: str) -> None: ...
 
 
 class Slack(Protocol):
@@ -221,6 +242,15 @@ def build_registry(store: Store, p: Providers, **kw) -> ToolRegistry:
                                                                            a.external_reference_id)),
                  RlFindIn, RlFindOut)
     reg.register("rocketlane_create_project", rl_create, RlCreateIn, RlCreateOut)
+
+    def rl_task_note(a: RlTaskNoteIn) -> Ok:
+        p.rocketlane.append_task_note(a.task_id, a.note_html, a.marker)
+        return Ok()
+
+    reg.register("rocketlane_find_task",
+                 lambda a: RlFindTaskOut(task_id=p.rocketlane.find_task(a.project_id, a.name_prefix)),
+                 RlFindTaskIn, RlFindTaskOut)
+    reg.register("rocketlane_add_task_note", rl_task_note, RlTaskNoteIn, Ok)
     reg.register("slack_create_channel",
                  lambda a: SlackCreateOut(channel_id=p.slack.create_channel(a.name)),
                  SlackCreateIn, SlackCreateOut)

@@ -15,7 +15,7 @@ from app.tools.registry import ToolRegistry
 class OnboardingState(TypedDict, total=False):
     run_id: str
     email: dict                 # InboundEmail.model_dump()
-    extracted: dict             # DealFields.model_dump()
+    extracted: dict             # ExtractedDeal.model_dump()
     issues: list[str]
     sender_ok: bool             # email sender verified as an active AE
     ae: dict                    # AeLookupOut of the AE to call

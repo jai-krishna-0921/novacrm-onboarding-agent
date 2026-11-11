@@ -35,6 +35,8 @@ class Store(Protocol):
     def set_kv(self, key: str, value: str) -> None: ...
     def upsert_ae(self, email: str, name: str, phone: str, active: bool = True) -> None: ...
     def lookup_ae(self, email: str) -> dict | None: ...
+    def add_migration_check(self, row: dict) -> None: ...
+    def list_migration_checks(self, run_id: str) -> list[dict]: ...
 
 
 class MemoryStore:
@@ -47,6 +49,7 @@ class MemoryStore:
         self.escalations: dict[str, dict] = {}
         self.kv: dict[str, str] = {}
         self.aes: dict[str, dict] = {}
+        self.migration_checks: list[dict] = []
         self._seq = 0
 
     def get_idem(self, key: str) -> dict | None:
@@ -120,3 +123,9 @@ class MemoryStore:
 
     def lookup_ae(self, email: str) -> dict | None:
         return self.aes.get(email.strip().lower())
+
+    def add_migration_check(self, row: dict) -> None:
+        self.migration_checks.append(row)
+
+    def list_migration_checks(self, run_id: str) -> list[dict]:
+        return [r for r in self.migration_checks if r["run_id"] == run_id]

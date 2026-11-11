@@ -1,21 +1,18 @@
 """Agent 1 - Intake & Routing: extract -> validate -> look up AE -> call -> confirm tier -> project."""
 
-import re
-
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.config import PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER, PLACEHOLDER_PM, Tier, role_placeholders
 from app.graph.state import Deps, OnboardingState
 from app.guardrails.decision import CallOutcome, CallResult, decide_tier
-from app.guardrails.input import validate_deal
+from app.guardrails.input import find_opportunity_url, opportunity_id_from_url, validate_deal
 from app.llm.client import LLMError
-from app.llm.schemas import DealFields, TranscriptReading
+from app.llm.schemas import DealFields, ExtractedDeal, TranscriptReading
 from app.services.keys import customer_key, opportunity_key
 from app.tools.registry import ToolFailed
 
 AGENT = "intake"
-OPP_RE = re.compile(r"/Opportunity/([A-Za-z0-9]{15,18})")
 
 
 def build_intake(d: Deps):
@@ -28,7 +25,11 @@ def build_intake(d: Deps):
 
     def check_sender(s: OnboardingState) -> dict:
         # Before any LLM call or reply: only active AEs can trigger onboarding (no auto-replies to outsiders).
+        # A From header is trivially forged, so Gmail must first have authenticated it (DMARC / aligned DKIM).
         sender = s["email"]["sender"]
+        if not s["email"].get("sender_authenticated"):
+            return d.escalate(s, AGENT, f"Sender authentication failed for {sender} (possible spoofing): "
+                                        f"{s['email'].get('auth_detail') or 'no verdict'}", "input")
         try:
             who = d.registry.call(AGENT, "ae_lookup", {"email": sender}, run_id=s["run_id"])
         except ToolFailed as e:
@@ -48,17 +49,18 @@ def build_intake(d: Deps):
         except LLMError as e:
             return d.escalate(s, AGENT, f"Could not read the deal email (LLM unavailable): {e}", "system")
         rationale = "LLM structured extraction (email treated as untrusted data)"
-        if m := OPP_RE.search(email["body"]):
-            if fields.opportunity_id != m.group(1):
-                rationale += f"; opportunity id overridden by regex ({fields.opportunity_id!r} -> {m.group(1)})"
-            fields.opportunity_id = m.group(1)
-        fields.opportunity_id = opportunity_key(fields.opportunity_id)
+        deal = ExtractedDeal(**fields.model_dump(), opportunity_url=find_opportunity_url(email["body"]))
+        if opp := opportunity_id_from_url(deal.opportunity_url):
+            if deal.opportunity_id != opp:
+                rationale += f"; opportunity id taken from the Salesforce link ({deal.opportunity_id!r} -> {opp})"
+            deal.opportunity_id = opp
+        deal.opportunity_id = opportunity_key(deal.opportunity_id)
         d.audit(s, AGENT, "extract_fields", rationale, input={"subject": email["subject"]},
-                output=fields.model_dump())
-        return {"extracted": fields.model_dump()}
+                output=deal.model_dump())
+        return {"extracted": deal.model_dump()}
 
     def validate(s: OnboardingState) -> dict:
-        fields = DealFields(**s["extracted"])
+        fields = ExtractedDeal(**s["extracted"])
         issues = validate_deal(fields)
         if fields.deal_count != 1:
             d.audit(s, AGENT, "validate", f"email announces {fields.deal_count} deals; one deal per email",

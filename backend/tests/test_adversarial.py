@@ -68,7 +68,8 @@ def test_15_and_18_char_salesforce_ids_are_the_same_opportunity(settings):
     first = h.receive(EMAIL)
     h.llm.fields = DealFields(**{**GOOD, "customer_name": "Acme Corporation",
                                  "opportunity_id": GOOD["opportunity_id"][:15]})
-    second = h.receive(EMAIL.model_copy(update={"message_id": "gm-2"}))
+    short_link = f"https://novacrm.my.salesforce.com/{GOOD['opportunity_id'][:15]}"
+    second = h.receive(EMAIL.model_copy(update={"message_id": "gm-2", "body": f"Acme Corporation closed. {short_link}"}))
     assert h.status(first) == "COMPLETED"
     assert len(h.world.rocketlane.projects) == 1
     assert h.status(second) == "ESCALATED"

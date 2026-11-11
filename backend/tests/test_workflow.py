@@ -14,9 +14,11 @@ GOOD = dict(customer_name="Acme Corp", customer_contact_name="Dana Lee",
             customer_email="dana@acme.example", ae_name="Jai Krishna",
             ae_email="jai@novacrm.example", opportunity_id="006Hs00001AbCdEIAV", deal_count=1)
 
+OPP_URL = "https://novacrm.lightning.force.com/lightning/r/Opportunity/006Hs00001AbCdEIAV/view"
 EMAIL = InboundEmail(message_id="gm-1", thread_id="th-1", rfc_message_id="<m1@mail>",
                      sender="jai@novacrm.example", subject="Closed Won: Acme Corp",
-                     body="We just closed Acme Corp. Contact: Dana Lee <dana@acme.example>. AE: Jai")
+                     body=f"We just closed Acme Corp. Contact: Dana Lee <dana@acme.example>. AE: Jai\nOpp: {OPP_URL}",
+                     sender_authenticated=True, auth_detail="dmarc=pass header.from=novacrm.example")
 
 ENTERPRISE_CALL = dict(status="connected", plan_tier="enterprise", confirmed=True,
                        transcript="Agent: Enterprise or Growth? AE: Enterprise. Agent: Confirm? AE: Yes.")
@@ -108,6 +110,30 @@ def test_two_deals_in_one_email_escalates_without_calling(settings):
     h, rid = run(settings, fields={**GOOD, "deal_count": 2})
     assert h.status(rid) == "ESCALATED"
     assert h.world.voice.calls == [] and h.world.rocketlane.projects == []
+
+
+def test_email_without_opportunity_link_asks_the_ae_and_creates_nothing(settings):
+    email = EMAIL.model_copy(update={"body": "We just closed Acme Corp. Opp ID 006Hs00001AbCdEIAV"})
+    h, rid = run(settings, calls=[ENTERPRISE_CALL], email=email)
+    assert h.status(rid) == "AWAITING_CLARIFICATION"
+    assert "opportunity_url: missing" in h.world.gmail.sent[0]["body"]
+    assert h.world.voice.calls == [] and h.world.rocketlane.projects == []
+
+
+def test_non_salesforce_opportunity_link_asks_the_ae(settings):
+    bad = "https://novacrm.lightning.force.example/lightning/r/Opportunity/006Hs00001AbCdEIAV/view"
+    h, rid = run(settings, calls=[ENTERPRISE_CALL], email=EMAIL.model_copy(update={"body": f"Closed! {bad}"}))
+    assert h.status(rid) == "AWAITING_CLARIFICATION"
+    assert "not a Salesforce Opportunity link" in h.world.gmail.sent[0]["body"]
+    assert h.world.voice.calls == [] and h.world.rocketlane.projects == []
+
+
+def test_opportunity_link_is_kept_and_its_id_beats_the_llm(settings):
+    h, rid = run(settings, calls=[ENTERPRISE_CALL], fields={**GOOD, "opportunity_id": "006WRONGWRONGWR"})
+    assert h.status(rid) == "COMPLETED"
+    x = h.state(rid)["extracted"]
+    assert x["opportunity_url"] == OPP_URL and x["opportunity_id"] == "006Hs00001AbCdE"
+    assert h.world.rocketlane.projects[0]["externalReferenceId"] == "006Hs00001AbCdE"
 
 
 def test_sender_not_in_ae_directory_escalates_without_calling(settings):
