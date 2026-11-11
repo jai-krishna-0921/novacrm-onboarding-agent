@@ -1,0 +1,42 @@
+# Production stack on one EC2 host: api + postgres + caddy (HTTPS). See deploy/README.md.
+# /opt/novacrm/app.env  = the app's .env (copied by deploy.sh, never committed)
+# /opt/novacrm/.env     = POSTGRES_PASSWORD, DOMAIN, ADMIN_PASSWORD_HASH (generated on the host, never committed)
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: app
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      retries: 30
+
+  api:
+    image: novacrm-api:latest
+    restart: unless-stopped
+    env_file: [app.env]
+    environment:  # overrides app.env
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@postgres:5432/app
+      PUBLIC_BASE_URL: https://${DOMAIN:?}
+      PROVIDER_MODE: real
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  caddy_data:
