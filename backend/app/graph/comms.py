@@ -57,7 +57,7 @@ def build_comms(d: Deps):
             d.audit(s, AGENT, "check_welcome", f"draft rejected: {problems}", status="blocked",
                     output={"message": draft})
         fallback = static_welcome(facts)
-        d.audit(s, AGENT, "draft_welcome", f"two drafts failed fact checks ({problems}); using static template",
+        d.audit(s, AGENT, "draft_welcome", f"no acceptable LLM draft ({problems}); using static template",
                 output={"message": fallback}, status="fallback")
         return {"welcome_message": fallback}
 

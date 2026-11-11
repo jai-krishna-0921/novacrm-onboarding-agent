@@ -269,7 +269,7 @@ def test_message_deleted_between_history_and_get_does_not_drop_the_whole_batch()
 
 def test_exception_mid_batch_keeps_cursor_and_later_emails_are_processed_next_sync(settings):
     """Coverage (passes today): if starting run #1 raises, the cursor is NOT advanced; the next sync re-lists the
-    batch, #1 is deduped by message id (it is FAILED, see the LLM-outage defect) and #2 gets its run."""
+    batch, #1 is deduped by message id (no second run, no second call) and #2 gets its run."""
     second = EMAIL.model_copy(update={"message_id": "gm-2", "thread_id": "th-2", "subject": "Closed Won: Globex"})
 
     class StickyInbox(FakeInbox):
@@ -277,8 +277,8 @@ def test_exception_mid_batch_keeps_cursor_and_later_emails_are_processed_next_sy
             self.cursor_seen.append(start_history_id)
             return list(self.emails), "200"
 
-    # (Trigger changed after review-2 fixes: an LLM outage now escalates instead of raising, so the unhandled
-    # error is simulated in runner.start itself, e.g. the database dropping mid-batch. Assertions unchanged.)
+    # (Trigger changed after review-2 fixes: an LLM outage now escalates instead of raising. The unhandled error is
+    # raised after runner.start has created gm-1's run, e.g. the database dropping mid-batch.)
     client, h, _ = api_env(settings, raise_server_exceptions=False)
     inbox = StickyInbox([EMAIL, second])
     h_container = client.app.state.container
@@ -286,9 +286,10 @@ def test_exception_mid_batch_keeps_cursor_and_later_emails_are_processed_next_sy
     real_start, broken = h.runner.start, {"on": False}
 
     def start(email):
+        out = real_start(email)  # run row + graph progress exist before the failure, so dedupe is exercised
         if broken["on"] and email["message_id"] == "gm-1":
             raise ConnectionError("database connection lost")
-        return real_start(email)
+        return out
 
     h.runner.start = start
     push(client)                                   # initialise cursor -> "100"
@@ -300,7 +301,10 @@ def test_exception_mid_batch_keeps_cursor_and_later_emails_are_processed_next_sy
     push(client)
     assert h.store.get_kv("gmail_history_id") == "200"
     assert h.store.find_run_by_message("gm-2")["status"] == "AWAITING_CALL"
-    assert len([r for r in h.store.list_runs() if r["gmail_message_id"] == "gm-1"]) == 1
+    [gm1] = [r for r in h.store.list_runs() if r["gmail_message_id"] == "gm-1"]
+    assert any(a["step"] == "dedupe" and a["status"] == "ignored" for a in h.store.list_audit(gm1["id"])), \
+        "re-listed gm-1 must be deduped by message id, not silently skipped"
+    assert len(h.world.voice.calls) == 2, "one call per run; the re-listed gm-1 must not place a second call"
 
 
 # ---------------------------------------------------------------- 5. Eval runner thresholds

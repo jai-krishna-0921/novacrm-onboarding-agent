@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.container import Container
+from app.guardrails.decision import CallResult
 from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
 from app.services.audit import audit
@@ -20,7 +21,8 @@ from app.tools.registry import PermanentToolError
 
 log = logging.getLogger("onboarding")
 CURSOR = "gmail_history_id"
-RECONCILE_AFTER = 180  # seconds without a webhook before we ask Retell directly
+RECONCILE_AFTER = 180       # seconds without a webhook before we ask Retell directly
+CALL_RESULT_TIMEOUT = 900   # seconds after which a call with no usable result counts as a failed attempt
 
 
 class Resolution(BaseModel):
@@ -67,25 +69,53 @@ def create_app(c: Container | None = None) -> FastAPI:
             k.store.set_kv(CURSOR, new_cursor)
 
     def tick(now: float | None = None) -> None:
-        """Scheduler: resume due retry waits; reconcile calls whose webhook never arrived (> RECONCILE_AFTER s)."""
+        """Scheduler: resume due retry waits; reconcile calls whose webhook never arrived.
+
+        Each run is isolated (one failure never blocks the others) and Retell is polled OUTSIDE the lock;
+        results are applied under the lock through the same pending-call guard as the webhook."""
         k, now = container(), now if now is not None else time.time()
+        stale: list[tuple[str, str, float]] = []
         with lock:
             for run in k.store.list_runs(500):
-                status = run.get("status")
-                if status == "AWAITING_RETRY":
-                    p = k.runner.pending(run["id"])
-                    if p and p.get("type") == "wait" and p["until"] <= now:
-                        k.runner.resume_wait(run["id"])
-                elif status == "AWAITING_CALL" and k.voice is not None:
-                    age = now - datetime.fromisoformat(run["updated_at"]).timestamp()
-                    p = k.runner.pending(run["id"])
-                    if age < RECONCILE_AFTER or not p or p.get("type") != "call":
-                        continue
-                    call = k.voice.get_call(p["provider_call_id"])
-                    done = call and (call.get("call_status") in ("not_connected", "error") or
-                                     (call.get("call_status") == "ended" and call.get("call_analysis")))
-                    if done:
-                        _resume_call_locked({"event": "call_analyzed", "call": call}, step="voice_reconcile")
+                try:
+                    status = run.get("status")
+                    if status == "AWAITING_RETRY":
+                        p = k.runner.pending(run["id"])
+                        if p and p.get("type") == "wait" and p["until"] <= now:
+                            k.runner.resume_wait(run["id"])
+                    elif status == "AWAITING_CALL" and k.voice is not None:
+                        age = now - datetime.fromisoformat(run["updated_at"]).timestamp()
+                        p = k.runner.pending(run["id"])
+                        if age >= RECONCILE_AFTER and p and p.get("type") == "call":
+                            stale.append((run["id"], p["provider_call_id"], age))
+                except Exception:  # noqa: BLE001
+                    log.exception("scheduler: run %s failed", run.get("id"))
+        for run_id, call_id, age in stale:
+            try:
+                reconcile(run_id, call_id, age)
+            except Exception:  # noqa: BLE001
+                log.exception("scheduler: reconcile %s failed", run_id)
+
+    def reconcile(run_id: str, call_id: str, age: float) -> None:
+        k = container()
+        try:
+            call, err = k.voice.get_call(call_id), None
+        except Exception as e:  # noqa: BLE001 - provider down: fall through to the timeout ceiling
+            call, err = None, e
+        state = (call or {}).get("call_status")
+        finished = call and (state in ("not_connected", "error") or (state == "ended" and call.get("call_analysis")))
+        if finished:
+            call = {**call, "metadata": {**(call.get("metadata") or {}), "run_id": run_id}}
+            _, result = map_call_analyzed({"event": "call_analyzed", "call": call})
+            why = "webhook never arrived; result fetched from Retell"
+        elif age >= CALL_RESULT_TIMEOUT:
+            result = CallResult(provider_call_id=call_id, status="failed")
+            why = (f"no usable result {int(age)}s after the call was placed (retell: "
+                   f"{state or (type(err).__name__ if err else 'call not found')}); counting the attempt as failed")
+        else:
+            return
+        with lock:
+            _apply_call_result(run_id, result, "voice_reconcile", why)
 
     def poll_loop(seconds: int) -> None:
         while not stop.wait(seconds):
@@ -155,15 +185,18 @@ def create_app(c: Container | None = None) -> FastAPI:
             _resume_call_locked(payload)
 
     def _resume_call_locked(payload: dict, step: str = "voice_webhook") -> None:
-        k = container()
         run_id, result = map_call_analyzed(payload)
+        _apply_call_result(run_id, result, step, "call result received; resuming")
+
+    def _apply_call_result(run_id: str, result: CallResult, step: str, why: str) -> None:
+        k = container()
         pending = k.runner.pending(run_id)
         if not pending or pending.get("type") != "call" or pending.get("provider_call_id") != result.provider_call_id:
             audit(k.store, run_id, "root", step,
                   rationale=f"ignored result for {result.provider_call_id}: run is not waiting on that call",
                   status="ignored")
             return
-        audit(k.store, run_id, "root", step, rationale="call result received; resuming",
+        audit(k.store, run_id, "root", step, rationale=why,
               output=result.model_dump(exclude={"transcript"}))
         k.runner.resume_call(run_id, result.model_dump())
 
