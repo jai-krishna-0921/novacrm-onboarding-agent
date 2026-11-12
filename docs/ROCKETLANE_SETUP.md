@@ -103,6 +103,12 @@ Then run `uv run python -m scripts.rl_inspect`: the new templates show up under 
 - If "Project Manager" isn't offered as a recipient, choose the PM user by name (or a project role), and note that choice in the video.
 - To demo it: in a project, set a task's due date 1 or 4 days in the past, then show the notification and the automation's run history.
 
+## Step 3b: Webhook (optional, not configured on this trial)
+
+The service has a Rocketlane webhook endpoint (`/webhooks/rocketlane`, token in the Basic Auth password or `?token=`) that syncs a project immediately. On this trial account no webhook is configured in Settings → Webhooks (checked 13 Nov 2026), so Agent 3 relies on its 15-second poll. To switch it on: Settings → Webhooks → Add webhook, task events, URL `{PUBLIC_BASE_URL}/webhooks/rocketlane`, Basic Auth password = `ROCKETLANE_WEBHOOK_TOKEN`.
+
+Screenshots of the templates, roles, overdue automations and a migration evidence note are in the appendix of `NovaCRM_Onboarding_Part1_Requirements.docx`.
+
 ## Step 4: Clean-up before recording
 Archive or delete rehearsal projects, or use a fresh customer name for each take.
 

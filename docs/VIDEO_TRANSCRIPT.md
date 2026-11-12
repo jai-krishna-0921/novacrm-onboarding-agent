@@ -64,7 +64,7 @@ When all four checks pass, an Enterprise deal gets the 30-day template with a de
 
 ## 6. Flow 2: tracking (40 s)
 
-The tracking agent hears about task changes through a Rocketlane webhook, and it also checks every project every 15 seconds.
+The tracking agent checks every project in Rocketlane every 15 seconds. The service also has a webhook endpoint for instant updates, which can be switched on in Rocketlane's settings.
 
 When a phase starts or finishes, the customer receives an update in Slack. When the data import is done, the agent runs the migration checks. If someone ticks “Migration verified” without a passing check, the agent reopens the task. If a task is marked Blocked, the team is warned internally. When Go-Live is complete, the agent writes the handoff summary.
 
