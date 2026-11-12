@@ -4,6 +4,7 @@ import { fmtDateTime, fmtTime, human, str } from "@/lib/format";
 import { CHECKS, sampleNoun } from "@/lib/migration";
 import type { MigrationCheckRow } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
+import { clampPage, Pagination, usePaging } from "@/components/ui/pagination";
 import { Table, Td, Th, Tr } from "@/components/ui/table";
 import { Tip } from "@/components/ui/tooltip";
 
@@ -71,39 +72,52 @@ export function CheckHistory({ checks }: { checks: MigrationCheckRow[] }) {
     batches.set(k, [...(batches.get(k) ?? []), c]);
   }
   const rows = [...batches.entries()].reverse();
+  const paging = usePaging("mig-history");
+  const page = clampPage(paging.page, rows.length, paging.size);
+  const shown = rows.slice(page * paging.size, (page + 1) * paging.size);
   return (
-    <Table>
-      <thead>
-        <tr>
-          <Th>When</Th>
-          <Th>Result</Th>
-          <Th>Failed checks</Th>
-          <Th className="hidden sm:table-cell">Batch</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(([batch, cs]) => {
-          const failed = cs.filter((c) => !c.passed);
-          return (
-            <Tr key={batch}>
-              <Td className="whitespace-nowrap">
-                <Tip content={fmtDateTime(cs[0].ts)}>
-                  <span tabIndex={0}>{fmtTime(cs[0].ts, true)}</span>
-                </Tip>
-              </Td>
-              <Td>
-                <Badge tone={failed.length ? "bad" : "ok"}>
-                  {failed.length ? `${failed.length} of ${cs.length} failed` : "All passed"}
-                </Badge>
-              </Td>
-              <Td className="text-sm text-ink-2">
-                {failed.map((c) => CHECKS[c.check_name]?.label ?? human(c.check_name)).join(", ") || "-"}
-              </Td>
-              <Td className="hidden font-mono text-[12.5px] text-ink-3 sm:table-cell">{batch}</Td>
-            </Tr>
-          );
-        })}
-      </tbody>
-    </Table>
+    <>
+      <Table>
+        <thead>
+          <tr>
+            <Th>When</Th>
+            <Th>Result</Th>
+            <Th>Failed checks</Th>
+            <Th className="hidden sm:table-cell">Batch</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map(([batch, cs]) => {
+            const failed = cs.filter((c) => !c.passed);
+            return (
+              <Tr key={batch}>
+                <Td className="whitespace-nowrap">
+                  <Tip content={fmtDateTime(cs[0].ts)}>
+                    <span tabIndex={0}>{fmtTime(cs[0].ts, true)}</span>
+                  </Tip>
+                </Td>
+                <Td>
+                  <Badge tone={failed.length ? "bad" : "ok"}>
+                    {failed.length ? `${failed.length} of ${cs.length} failed` : "All passed"}
+                  </Badge>
+                </Td>
+                <Td className="text-sm text-ink-2">
+                  {failed.map((c) => CHECKS[c.check_name]?.label ?? human(c.check_name)).join(", ") || "-"}
+                </Td>
+                <Td className="hidden font-mono text-[12.5px] text-ink-3 sm:table-cell">{batch}</Td>
+              </Tr>
+            );
+          })}
+        </tbody>
+      </Table>
+      <Pagination
+        total={rows.length}
+        page={page}
+        size={paging.size}
+        onPage={paging.setPage}
+        onSize={paging.setSize}
+        noun="checks"
+      />
+    </>
   );
 }
