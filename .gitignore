@@ -32,3 +32,6 @@ backend/evals/results/
 
 # browser automation artifacts
 .playwright-mcp/
+
+# submission bundle (videos, large)
+drive-content/
