@@ -26,6 +26,6 @@ web-lint:  ; $(WEB) npm run lint
 check: test web-lint web-test web-build   # everything offline: backend tests + dashboard lint/test/build
 
 # Assignment Part 4 (happy path, validation, template accuracy, edge cases), verbose for the video
-PART4 = happy_path_enterprise_end_to_end or each_missing_required_field or malformed_contact_email_asks or missing_required_field_asks_ae or missing_opportunity_link or enterprise_rule_is_30_days or growth_rule_is_14_days or rocketlane_down or existing_rocketlane_project_for_customer or ae_never_answers or persistently_ambiguous or ambiguous_answer_then_clear
+PART4 = happy_path_enterprise_end_to_end or template_accuracy_follows_confirmed_tier or each_missing_required_field or malformed_contact_email_asks or missing_required_field_asks_ae or missing_opportunity_link or enterprise_rule_is_30_days or growth_rule_is_14_days or rocketlane_down or existing_rocketlane_project_for_customer or ae_never_answers or persistently_ambiguous or ambiguous_answer_then_clear
 test-part4: ; cd backend && PROVIDER_MODE=fake uv run pytest -p no:randomly -v -k "$(PART4)"
 
