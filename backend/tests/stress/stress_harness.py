@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import httpx
 import uvicorn
 
+from app.guardrails.output import run_suffix
 from app.llm.client import LLMError
 from app.llm.schemas import DealFields
 from app.services.keys import customer_key, opportunity_key
@@ -401,10 +402,19 @@ def check_invariants(*, runs: list[dict], escalations: list[dict], audit_rows: l
             if a["step"] == "tool:rocketlane_create_project" and out.get("project_id"):
                 claims[("project", str(out["project_id"]))].add(a["run_id"])
     v += [f"{k[0].upper()} CLAIMED BY {len(r)} RUNS: {k[1]}" for k, r in claims.items() if len(r) > 1]
+    # A create whose response AND follow-up lookup were both lost is escalated as "outcome unknown"; the channel
+    # exists but nothing can claim it until a person verifies. That is the designed outcome, not an orphan, as
+    # long as the owning run (name ends in its run hash) is still escalated with that reason.
+    unknown = {run_suffix(e["run_id"]) for e in escalations
+               if e.get("status") == "open" and "outcome unknown" in (e.get("reason") or "")}
     v += [f"ORPHAN CHANNEL: {cid} {c['name']}" for cid, c in world.slack.channels.items()
-          if ("channel", cid) not in claims and cid not in set(chan_runs) and not cid.startswith("CHANDOFF")]
+          if ("channel", cid) not in claims and cid not in set(chan_runs) and not cid.startswith("CHANDOFF")
+          and c["name"].rsplit("-", 1)[-1] not in unknown]
+    unknown_customers = {r.get("customer_name") for r in runs
+                         if run_suffix(r["id"]) in unknown and r.get("customer_name")}
     v += [f"ORPHAN PROJECT: {p['projectId']} {p['projectName']}" for p in rl
-          if ("project", str(p["projectId"])) not in claims and str(p["projectId"]) not in set(project_runs)]
+          if ("project", str(p["projectId"])) not in claims and str(p["projectId"]) not in set(project_runs)
+          and not any(p["projectName"].startswith(f"{c} Onboarding") for c in unknown_customers)]
 
     if deals is not None:
         v += _check_outcomes(runs, deals, world, audit_by_run, escalations)

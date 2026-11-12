@@ -79,15 +79,16 @@ def _dump(env, runs, violations, audit_rows):
     if not path or not violations:
         return
     text_v = " ".join(violations)
-    hit = [r for r in runs if r["id"] in text_v or (r.get("customer_name") and re.sub(r"[^a-z0-9]+", "-",
-           r["customer_name"].lower()) in text_v)]
+    hit = [r for r in runs if r["id"] in text_v or (r.get("customer_name") and (r["customer_name"] in text_v or
+           re.sub(r"[^a-z0-9]+", "-", r["customer_name"].lower()) in text_v))]
+    TOOLS = ("tool:slack", "tool:rocketlane")  # noqa: N806
     with open(path, "w") as f:
         for r in hit[:4]:
             f.write(f"=== {r['id']} {r.get('customer_name')} {r['status']} channel={r.get('slack_channel_id')}\n")
             for a in audit_rows:
                 if a["run_id"] == r["id"]:
                     f.write(f"{a['ts'][11:23]} {a['agent']}/{a['step']} [{a['status']}] {str(a['rationale'])[:220]}"
-                            f" {str(a.get('output'))[:160] if a['step'].startswith('tool:slack') else ''}\n")
+                            f" {str(a.get('output'))[:160] if a['step'].startswith(TOOLS) else ''}\n")
 
 
 # ---------------------------------------------------------------- Postgres: kill mid-node + restart
