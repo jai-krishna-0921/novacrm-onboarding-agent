@@ -94,7 +94,7 @@ The tracking agent then runs five checks against the data that landed in NovaCRM
 
 [Agents page.] All three agents are running and healthy.
 
-[Send the Mavis Analytics email.] The email arrived through the Gmail push, and the sender and fields have passed their checks.
+[Send the Mavis Health email.] The email arrived through the Gmail push, and the sender and fields have passed their checks.
 
 [Answer the call: “Enterprise”, then “Yes”.] The page shows the call while it is happening, and then it shows that the answer is being read.
 
@@ -114,11 +114,11 @@ The tracking agent then runs five checks against the data that landed in NovaCRM
 
 **Negative runs.**
 
-[Send the Pied Piper email.] The contact email is missing, so the agent asked the AE for it, and nothing was created.
+[Send the Quarry Labs email.] The contact email is missing, so the agent asked the AE for it, and nothing was created.
 
 [Re-send the Mavis email.] This is a duplicate deal, so it went straight to a human, and no call was made.
 
-[Send the Hooli email, and say “wrong number” on the calls.] An unclear answer is never accepted. After three calls, the run went to a human with every recording attached. When a person sets the tier, that action is audited.
+[Send the Northwind Freight email, and say “wrong number” on the calls.] An unclear answer is never accepted. After three calls, the run went to a human with every recording attached. When a person sets the tier, that action is audited.
 
 [Acme Retail.] Here, someone ticked “Migration verified” without a passing check, so the agent reopened the task.
 
