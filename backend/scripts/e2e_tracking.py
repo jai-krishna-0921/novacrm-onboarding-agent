@@ -109,6 +109,14 @@ def main() -> int:
         out = tracker.sync(run_id)
         check("Kickoff phase announced in Slack", any("Kickoff complete" in a for a in out["actions"]), str(out["actions"]))
 
+        print("2b. a Configuration task in progress -> 'phase has started' post", flush=True)
+        cfg = by_phase["Configuration"][0]
+        rl.set_task_status(cfg["task_id"], 2)
+        time.sleep(2)
+        out = tracker.sync(run_id)
+        check("Configuration 'has started' posted", any("Configuration started" in a for a in out["actions"]),
+              str(out["actions"]))
+
         print("3. Data import done -> automatic migration check", flush=True)
         imp = next(n for n in tasks if n.lower().startswith(("data import", "full import")))
         tick(imp, *[t["name"] for t in by_phase["Data Migration"] if t["name"].lower().startswith("data export")])
@@ -139,6 +147,15 @@ def main() -> int:
         time.sleep(2)
         status = rl._request("GET", f"/tasks/{tasks[mv]['task_id']}").get("status", {})
         check("'Migration verified' stays completed", status.get("value") == COMPLETED, str(status))
+
+        print("5b. Go-Live phase marked Completed in Rocketlane (tasks still open) -> announced", flush=True)
+        [golive] = [p for p in rl.list_phases(project_id) if p["name"] == "Go-Live"]
+        rl._request("PUT", f"/phases/{golive['phase_id']}", json={"status": {"value": 3}}, write=True)
+        time.sleep(2)
+        out = tracker.sync(run_id)
+        check("phase marked Completed in Rocketlane is announced", any("Go-Live complete" in a for a in out["actions"]),
+              str(out["actions"]))
+        rl._request("PUT", f"/phases/{golive['phase_id']}", json={"status": {"value": 2}}, write=True)
 
         print("6. remaining tasks done -> phases announced, handoff", flush=True)
         rest = [t["name"] for t in tasks.values() if t["name"] not in (mv,) and
