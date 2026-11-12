@@ -98,6 +98,8 @@ class AePatch(BaseModel):
 MIGRATION_DEMO_RUN = "migration_demo"  # synthetic run id for the demo fix/reset audit rows
 
 
+CALL_PROGRESS = {"call_started": "started", "call_ended": "ended"}  # Retell events shown on the dashboard
+
 def _canonical(rows: list[dict]) -> tuple:
     """Columns + row multiset in a fixed order, to tell whether a demo write would change anything."""
     cols = columns_of(rows)
@@ -329,6 +331,13 @@ def create_app(c: Container | None = None) -> FastAPI:
             payload = json.loads(raw)
             if not isinstance(payload, dict):
                 raise ValueError("payload is not an object")
+            if payload.get("event") in CALL_PROGRESS:
+                call = payload["call"]
+                run_id, call_id = (call.get("metadata") or {}).get("run_id"), call["call_id"]
+                if run_id and isinstance(run_id, str) and isinstance(call_id, str):
+                    bg.add_task(record_call_progress, run_id, call_id, payload["event"],
+                                str(call.get("disconnection_reason") or ""))
+                return Response(status_code=204)
             if payload.get("event") != "call_analyzed":
                 return Response(status_code=204)
             map_call_analyzed(payload)  # validates call_id, metadata.run_id and field types
@@ -338,6 +347,18 @@ def create_app(c: Container | None = None) -> FastAPI:
         # redelivery after a failed resume still works and a duplicate after success is ignored.
         bg.add_task(resume_call, payload)
         return Response(status_code=204)
+
+    def record_call_progress(run_id: str, call_id: str, event: str, reason: str) -> None:
+        """Dashboard only: the AE picked up / hung up. The result itself arrives later with call_analyzed, so
+        without this the page would show the call as ringing until the analysis is done. Decides nothing."""
+        k = container()
+        pending = k.runner.pending(run_id) or {}
+        if pending.get("type") != "call" or pending.get("provider_call_id") != call_id:
+            return  # not the call this run waits on (stale, or another run's): nothing to show
+        audit(k.store, run_id, "root", "call_progress", status=CALL_PROGRESS[event],
+              input={"call_id": call_id}, output={"disconnection_reason": reason} if reason else None,
+              rationale="AE is on the call" if event == "call_started"
+              else "call ended; waiting for Retell's analysis of the answer")
 
     def resume_call(payload: dict) -> None:
         with lock:

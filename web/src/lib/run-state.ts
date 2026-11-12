@@ -200,11 +200,6 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
   const tier = String(run.plan_tier || obj(confirmed?.output).tier || obj(manual?.input).tier || "");
   const aeRow = lastAudit(audit, "tool:ae_lookup", (a) => !!obj(a.output).name);
   const ae = aeRow ? String(obj(aeRow.output).name) : "";
-  const onCall =
-    (pending && (pending.type === "call" || pending.type === "wait")) ||
-    status === "AWAITING_CALL" ||
-    status === "AWAITING_RETRY";
-  const has = (step: string) => audit.some((a) => a.step === step && a.status !== "failed");
   const statusIdx: Record<string, number> = {
     RECEIVED: 1,
     AWAITING_CLARIFICATION: 1,
@@ -215,6 +210,14 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
     COMPLETED: 6,
     HANDED_OFF: 7,
   };
+  // The run status wins over a pending call in an older detail response: once the run has moved past the call
+  // (tier confirmed, project created, ...) the page must never say the call is still going.
+  const pastCall = (statusIdx[status] ?? 0) > 2 || TERMINAL.has(status);
+  const onCall =
+    status === "AWAITING_CALL" ||
+    status === "AWAITING_RETRY" ||
+    (!pastCall && !!pending && (pending.type === "call" || pending.type === "wait"));
+  const has = (step: string) => audit.some((a) => a.step === step && a.status !== "failed");
 
   const done = [
     true,
@@ -302,17 +305,37 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
     if (c) Object.assign(c, { state: "warn", sub: "Asked AE for details" });
   } else if (onCall) {
     const attempt = pending?.attempt || decisions.length + 1;
+    const lastDecision = decisions[decisions.length - 1];
+    const dial = lastAudit(audit, "tool:voice_start_call");
+    const progress = audit.filter(
+      (a) => a.step === "call_progress" && (!dial || String(a.ts ?? "") >= String(dial.ts ?? "")),
+    );
+    const ended = progress.some((a) => a.status === "ended");
+    const pickedUp = progress.some((a) => a.status === "started");
     if (pending?.type === "wait") {
-      title = "Call not answered. Trying again soon";
+      title =
+        lastDecision?.status === "unclear"
+          ? "The answer was not clear. Calling again shortly"
+          : "Call not answered. Trying again soon";
       sub =
         pending.until != null
           ? `Next attempt at ${fmtTime(pending.until)}`
           : "The next attempt is scheduled.";
       steps[2].sub = "Retrying";
     } else {
-      title = `Calling ${ae || "the AE"} to confirm the plan tier`;
-      sub = `Attempt ${attempt}. This page updates when the call ends.`;
-      steps[2].sub = `Ringing, attempt ${attempt}`;
+      if (ended) {
+        title = `Call with ${ae || "the AE"} ended. Reading the answer`;
+        sub = `Attempt ${attempt}. The result usually arrives within a minute of hanging up.`;
+        steps[2].sub = `Call ended, attempt ${attempt}`;
+      } else if (pickedUp) {
+        title = `On the call with ${ae || "the AE"}`;
+        sub = `Attempt ${attempt}. Confirming the plan tier.`;
+        steps[2].sub = `On the call, attempt ${attempt}`;
+      } else {
+        title = `Calling ${ae || "the AE"} to confirm the plan tier`;
+        sub = `Attempt ${attempt}. This page updates when the call ends.`;
+        steps[2].sub = `Ringing, attempt ${attempt}`;
+      }
     }
     steps[2].state = "active";
   } else if (status === "HANDED_OFF" || cur === 7) {

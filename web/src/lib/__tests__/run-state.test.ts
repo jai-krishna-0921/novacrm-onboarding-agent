@@ -121,3 +121,38 @@ describe("tracking flags from Rocketlane", () => {
     expect(v.steps[6].state).toBe("warn");
   });
 });
+
+describe("call stages", () => {
+  const dial = row("tool:voice_start_call", "ok", { ts: "2026-11-12T10:01:00Z" });
+  const call = { type: "call", attempt: 1 } as never;
+
+  it("never says the call is going once the run has moved past it, even with a stale pending call", () => {
+    const v = deriveRun(run({ status: "COMPLETED" }), { audit: [dial], pending: call });
+    expect(v.title).not.toMatch(/Calling|Ringing|On the call/);
+    expect(v.steps[2].state).not.toBe("active");
+  });
+
+  it("shows picked up, then ended while Retell analyses the answer", () => {
+    const up = row("call_progress", "started", { ts: "2026-11-12T10:01:10Z" });
+    const down = row("call_progress", "ended", { ts: "2026-11-12T10:01:50Z" });
+    let v = deriveRun(run({ status: "AWAITING_CALL" }), { audit: [dial, up], pending: call });
+    expect(v.steps[2].sub).toBe("On the call, attempt 1");
+    v = deriveRun(run({ status: "AWAITING_CALL" }), { audit: [dial, up, down], pending: call });
+    expect(v.title).toMatch(/ended\. Reading the answer/);
+    expect(v.steps[2].sub).toBe("Call ended, attempt 1");
+  });
+
+  it("ignores progress from an earlier attempt", () => {
+    const oldEnd = row("call_progress", "ended", { ts: "2026-11-12T10:00:30Z" });
+    const v = deriveRun(run({ status: "AWAITING_CALL" }), { audit: [oldEnd, dial], pending: call });
+    expect(v.steps[2].sub).toBe("Ringing, attempt 1");
+  });
+
+  it("says the answer was unclear, not 'not answered', before a retry after an unclear call", () => {
+    const v = deriveRun(run({ status: "AWAITING_RETRY" }), {
+      audit: [dial, row("decide_tier", "unclear")],
+      pending: { type: "wait", attempt: 2 } as never,
+    });
+    expect(v.title).toBe("The answer was not clear. Calling again shortly");
+  });
+});

@@ -3,13 +3,14 @@ import { Database, Play } from "lucide-react";
 import { useState } from "react";
 import { api, enc } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
-import { qk } from "@/lib/queries";
+import { qk, useMigrationSummary } from "@/lib/queries";
 import { MigrationCheckResult, type MigrationCheckRow, type Run } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useToast } from "@/components/ui/toast";
 import { CheckHistory, CheckTiles, splitBatches } from "./MigrationTiles";
+import { MigrationVerdict } from "./MigrationVerdict";
 
 export function useRunMigrationCheck(runId: string | null) {
   const toast = useToast();
@@ -44,6 +45,7 @@ export function useRunMigrationCheck(runId: string | null) {
 
 export function MigrationTab({ run, checks }: { run: Run; checks: MigrationCheckRow[] }) {
   const { run: check, busy } = useRunMigrationCheck(run.id);
+  const summary = useMigrationSummary();
   if (!run.rocketlane_project_id && !checks.length)
     return (
       <EmptyState icon={Database} title="No project yet">
@@ -74,7 +76,14 @@ export function MigrationTab({ run, checks }: { run: Run; checks: MigrationCheck
           </Button>
         ) : null}
       </div>
-      {latest.length ? <CheckTiles checks={latest} /> : null}
+      {latest.length ? (
+        <CheckTiles checks={latest} />
+      ) : summary.data ? (
+        <MigrationVerdict
+          summary={summary.data}
+          footer="Preview on the migration data as it is now. Nothing is recorded on this project until the check runs."
+        />
+      ) : null}
       {older.length ? (
         <div>
           <h3 className="mb-2 text-[13px] font-medium text-ink-3">Earlier checks</h3>

@@ -92,11 +92,16 @@ describe("pages against the mock API", () => {
   it("migration page highlights problem rows", async () => {
     renderApp("/migration");
     await screen.findByText("Missing columns");
-    await waitFor(() => expect(document.querySelectorAll('tr[data-tone="ok"]').length).toBeGreaterThan(0));
-    await userEvent.click(screen.getByRole("switch", { name: "Only rows with problems" }));
+    // opens problems-first: the destination side, only rows with problems
+    expect(screen.getByRole("switch", { name: "Only rows with problems" })).toBeChecked();
+    await waitFor(() => expect(screen.getAllByText("Duplicate id").length).toBeGreaterThan(0));
+    expect(document.querySelectorAll('tr[data-tone="ok"]').length).toBe(0);
     // source side: the four rows never copied, all flagged as the severe kind
+    await userEvent.click(screen.getByRole("tab", { name: /Source/ }));
     await waitFor(() => expect(document.querySelectorAll('tr[data-tone="bad"]').length).toBe(4));
     expect(document.querySelectorAll('tr[data-tone="ok"]').length).toBe(0);
+    await userEvent.click(screen.getByRole("switch", { name: "Only rows with problems" }));
+    await waitFor(() => expect(document.querySelectorAll('tr[data-tone="ok"]').length).toBeGreaterThan(0));
   });
 
   it("migration page compares columns and shows each side's own columns", async () => {
@@ -108,16 +113,23 @@ describe("pages against the mock API", () => {
     expect(screen.getByText("Missing columns")).toBeInTheDocument();
 
     const headers = () => screen.getAllByRole("columnheader").map((h) => h.textContent);
-    await waitFor(() => expect(headers()).toContain("Phone"));
-    expect(headers()).not.toContain("Lifecycle stage");
-
-    await userEvent.click(screen.getByRole("tab", { name: /Destination/ }));
     await waitFor(() => expect(headers()).toContain("Lifecycle stage"));
     expect(headers()).not.toContain("Phone");
     // blank required fields show as (blank), not as an empty cell
-    await userEvent.click(screen.getByRole("switch", { name: "Only rows with problems" }));
     await waitFor(() => expect(screen.getAllByText("(blank)").length).toBeGreaterThan(0));
     expect(screen.getAllByText("Duplicate id").length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole("tab", { name: /Source/ }));
+    await waitFor(() => expect(headers()).toContain("Phone"));
+    expect(headers()).not.toContain("Lifecycle stage");
+  });
+
+  it("migration page says whether the data would pass verification, check by check", async () => {
+    renderApp("/migration");
+    const verdict = await screen.findByRole("region", { name: "Migration verdict" });
+    expect(verdict).toHaveTextContent("Not ready to verify");
+    expect(verdict).toHaveTextContent("5 of 5 checks fail");
+    expect(verdict).toHaveTextContent("Missing in destination: phone");
   });
 
   it("migration demo fix adds the missing column, reset puts the defects back", async () => {

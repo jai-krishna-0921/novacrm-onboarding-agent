@@ -24,23 +24,27 @@ import { useToast } from "@/components/ui/toast";
 import { Tip } from "@/components/ui/tooltip";
 import { usePageMeta } from "@/components/layout/page-meta";
 import { useRunMigrationCheck } from "@/components/run/MigrationTab";
+import { MigrationVerdict } from "@/components/run/MigrationVerdict";
 import { CheckHistory, CheckTiles, splitBatches } from "@/components/run/MigrationTiles";
 
 export function MigrationPage() {
   usePageMeta("Data migration");
   const s = useMigrationSummary();
-  const [onlyProblems, setOnly] = useState(() => getPref("dash.mig.only", "0") === "1");
+  // Problems first: the destination side with only problem rows (v2 keys so earlier saved choices don't hide them).
+  const [onlyProblems, setOnly] = useState(() => getPref("dash.mig2.only", "1") === "1");
   const toggle = (v: boolean) => {
     setOnly(v);
-    setPref("dash.mig.only", v ? "1" : "0");
+    setPref("dash.mig2.only", v ? "1" : "0");
   };
   const [side, setSide] = useState<Side>(() =>
-    getPref("dash.mig.side", "source") === "dest" ? "dest" : "source",
+    getPref("dash.mig2.side", "dest") === "source" ? "source" : "dest",
   );
   const pickSide = (v: Side) => {
     setSide(v);
-    setPref("dash.mig.side", v);
+    setPref("dash.mig2.side", v);
   };
+  const runs = useRuns();
+  const lastRun = runs.data?.find((r) => r.id === s.data?.last_check?.run_id);
   const sum = s.data;
   const issues = sum ? problemCount(sum) : 0;
 
@@ -48,7 +52,8 @@ export function MigrationPage() {
     <div className="flex flex-col gap-4">
       <p className="text-[14.5px] text-ink-2">
         Contacts copied from the customer's old CRM (source) into NovaCRM (destination). The check compares
-        the two before a person ticks Migration verified in Rocketlane.
+        the two before a person ticks Migration verified in Rocketlane. This demo uses one shared sample
+        export (Globex contacts) for every run.
       </p>
       {s.isError ? <ErrorBox error={s.error} /> : null}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -96,18 +101,21 @@ export function MigrationPage() {
         )}
       </div>
       {sum ? (
-        <p className="text-[13px] text-ink-3">
-          {sum.last_check?.ts
-            ? `Last check ${fmtDateTime(sum.last_check.ts)}${sum.last_check.passed == null ? "" : sum.last_check.passed ? ", passed" : ", failed"}.`
-            : "No check has run yet."}{" "}
-          {issues
-            ? `${fmtInt(issues)} problems in the data right now.`
-            : "No problems in the data right now."}
-        </p>
-      ) : null}
-
-      {sum && (sum.columns.source.length || sum.columns.dest.length) ? (
-        <ColumnsCard columns={sum.columns} />
+        <div className="grid gap-4 xl:grid-cols-2">
+          <MigrationVerdict
+            summary={sum}
+            footer={
+              sum.last_check?.ts
+                ? `Last recorded check: ${lastRun?.customer_name || "a run"}, ${fmtDateTime(sum.last_check.ts)}, ${
+                    sum.last_check.passed ? "passed" : "failed"
+                  }.${sum.last_check.passed && issues ? " The data has changed since then." : ""}`
+                : "No check has been recorded on a run yet. It runs by itself when the import task is ticked in Rocketlane."
+            }
+          />
+          {sum.columns.source.length || sum.columns.dest.length ? (
+            <ColumnsCard columns={sum.columns} />
+          ) : null}
+        </div>
       ) : null}
 
       <Card className="overflow-hidden">
@@ -124,7 +132,11 @@ export function MigrationPage() {
                 badge={
                   <SideBadge
                     n={
-                      sum ? sum.problems.duplicates.length + sum.problems.missing_required.length : undefined
+                      sum
+                        ? sum.problems.duplicates.length +
+                          sum.problems.missing_required.length +
+                          sum.problems.not_in_source.length
+                        : undefined
                     }
                   />
                 }

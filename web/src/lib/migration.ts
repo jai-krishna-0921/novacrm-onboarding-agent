@@ -60,3 +60,58 @@ export const CHECKS: Record<string, { label: string; explain: string }> = {
 
 /** The schema check's sample_ids are column names; every other check lists row ids. */
 export const sampleNoun = (checkName: string) => (checkName === "schema" ? "missing columns" : "ids");
+
+export type PredictedCheck = { name: string; label: string; passed: boolean; detail: string };
+
+const ids = (xs: unknown[], max = 4) =>
+  xs.length > max ? `${xs.slice(0, max).join(", ")} and ${xs.length - max} more` : xs.join(", ");
+
+/** What the five checks in migration_check.py would say about the data right now (same rules, from the
+ * summary): lets the page show a verdict before, or long after, a check was recorded on a run. */
+export function predictChecks(s: MigrationSummary): PredictedCheck[] {
+  const p = s.problems;
+  const diff = s.dest_count - s.source_count;
+  return [
+    {
+      name: "record_count",
+      label: CHECKS.record_count.label,
+      passed: s.source_count > 0 && diff === 0,
+      detail:
+        s.source_count === 0
+          ? "Source is empty"
+          : diff === 0
+            ? `${s.source_count} rows on both sides`
+            : `${s.dest_count} of ${s.source_count} rows (${Math.abs(diff)} ${diff > 0 ? "extra" : "short"})`,
+    },
+    {
+      name: "primary_keys",
+      label: CHECKS.primary_keys.label,
+      passed: !p.missing_in_dest.length,
+      detail: p.missing_in_dest.length
+        ? `Ids not copied: ${ids(p.missing_in_dest)}`
+        : "Every source id copied",
+    },
+    {
+      name: "duplicates",
+      label: CHECKS.duplicates.label,
+      passed: !p.duplicates.length,
+      detail: p.duplicates.length ? `Duplicated ids: ${ids(p.duplicates)}` : "No id appears twice",
+    },
+    {
+      name: "required_fields",
+      label: CHECKS.required_fields.label,
+      passed: !p.missing_required.length,
+      detail: p.missing_required.length
+        ? `Blank name or email on ids ${ids(p.missing_required)}`
+        : "Every row has a name and an email",
+    },
+    {
+      name: "schema",
+      label: CHECKS.schema.label,
+      passed: !s.columns.missing.length,
+      detail: s.columns.missing.length
+        ? `Missing in destination: ${s.columns.missing.join(", ")}`
+        : "Every source column exists",
+    },
+  ];
+}

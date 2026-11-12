@@ -52,10 +52,12 @@ export function describe(a: AuditRow): { title: string; tone: FeedTone; tech: bo
             ? "Call not answered"
             : "Tier was not clear on the call",
       );
+    case "call_progress":
+      return t(s === "started" ? "AE picked up the call" : "Call ended, reading the answer", "info");
     case "voice_webhook":
     case "voice_reconcile":
       return t(
-        s === "ignored" ? "Ignored a stale call result" : "Call ended, result received",
+        s === "ignored" ? "Ignored a stale call result" : "Call result received",
         s === "ignored" ? "idle" : "info",
       );
     case "check_duplicate":

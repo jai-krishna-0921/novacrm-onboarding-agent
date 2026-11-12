@@ -195,3 +195,32 @@ def test_scheduler_reconciles_a_call_whose_webhook_never_arrived(settings):
     app.state.tick(now=time.time() + 400)         # ended + analyzed -> resumed via the same guarded path
     assert h.status(rid) == "COMPLETED"
     assert any(a["step"] == "voice_reconcile" for a in h.store.list_audit(rid))
+
+
+def progress(run_id, event, call_id="call-1"):
+    return {"event": event, "call": {"call_id": call_id, "call_status": "ongoing", "metadata": {"run_id": run_id},
+                                     "disconnection_reason": "user_hangup" if event == "call_ended" else None}}
+
+
+def test_call_started_and_ended_are_shown_but_decide_nothing(env):
+    """The dashboard needs 'call ended, reading the answer' between hang-up and Retell's analysis."""
+    client, h, _ = env
+    push(client), push(client)
+    rid = only_run(h)
+    assert retell_post(client, progress(rid, "call_started")).status_code == 204
+    assert retell_post(client, progress(rid, "call_ended")).status_code == 204
+    rows = [(a["step"], a["status"]) for a in h.store.list_audit(rid) if a["step"] == "call_progress"]
+    assert rows == [("call_progress", "started"), ("call_progress", "ended")]
+    assert h.status(rid) == "AWAITING_CALL"                  # still waiting for call_analyzed
+    retell_post(client, analyzed(rid))
+    assert h.status(rid) == "COMPLETED"
+
+
+def test_call_progress_for_another_call_or_unsigned_is_ignored(env):
+    client, h, _ = env
+    push(client), push(client)
+    rid = only_run(h)
+    assert retell_post(client, progress(rid, "call_ended", call_id="call-old")).status_code == 204
+    assert retell_post(client, progress(rid, "call_ended"), key="wrong").status_code == 401
+    assert retell_post(client, {"event": "call_ended", "call": {}}).status_code == 400
+    assert [a for a in h.store.list_audit(rid) if a["step"] == "call_progress"] == []
