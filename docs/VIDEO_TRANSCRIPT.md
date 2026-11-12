@@ -1,4 +1,4 @@
-# Video transcript (about 14 minutes)
+# Video transcript (about 15 minutes)
 
 Read it as written. **[Brackets]** are actions, not speech. Slide numbers match the deck.
 
@@ -78,7 +78,7 @@ Idempotency matters because an API can time out after it has already done the wo
 
 The guardrails are as follows. There is no project without a confirmed tier. The sender is verified before anything runs. Emails are treated as data and never as instructions, which protects against prompt injection. Duplicates are blocked. Every customer message is fact-checked, so nothing internal leaks. Everything is audited, and phone numbers are masked.
 
-I evaluated the prompts against real Claude. Extraction scored 34 out of 34. Call transcripts scored 31 out of 31, with zero false confirmations. Welcome messages scored 8 out of 8, and handoff summaries scored 6 out of 6. The system also has more than 900 automated tests.
+The system also has more than 900 automated tests, and I will show the model evaluations after the demo.
 
 ## 8. Data migration (40 s)
 
@@ -124,7 +124,19 @@ The tracking agent then runs five checks against the data that landed in NovaCRM
 
 [AI usage, then Tool calls.] Every model call and every tool call is logged with its tokens, cost, inputs and outputs.
 
-## 10. Assumptions and design (1 min)
+## 10. Evaluations (1 min)
+
+I measured every prompt against real Claude by using labelled datasets. The evaluation suite exits with an error if any score drops below its threshold, so a prompt change cannot ship if it makes the results worse.
+
+For extraction, both Haiku and Sonnet scored 34 out of 34. This dataset includes malformed emails, missing fields, several deals in one email, and prompt-injection attempts.
+
+For call transcripts, both models scored 31 out of 31, and neither model ever confirmed a tier falsely. This dataset includes hedged answers, wrong numbers, voicemail, and trap calls where the AE only agreed to a plan that the voice agent had suggested.
+
+For welcome messages, both models scored 8 out of 8. A separate Sonnet judge scored each message, and a code check also confirmed it.
+
+Since Haiku matched Sonnet on all three tasks at about one seventh of the cost, Haiku runs the agents. The handoff summary is the one place where Sonnet did better, scoring 6 out of 6 compared with Haiku’s 5 out of 6, so Sonnet writes only the handoff.
+
+## 11. Assumptions and design (1 min)
 
 I made a few assumptions, and each one has a reason. Each email announces one deal, because that is how Sales works today. The tier comes from the phone call and never from the price, because prices in emails are unreliable. CS owns the templates, so they live in configuration and not in prompts. Overdue escalation stays in Rocketlane, so it works even if my service is down. Finally, customer data is only ever read and never written.
 
