@@ -115,7 +115,10 @@ class RocketlaneClient:
         VERIFIED live 2026-11-12: `phase` is null unless includeFields=phase is sent, then {phaseId, phaseName};
         default statuses are To do=1, In progress=2, Completed=3."""
         out = []
-        for t in self._get_all("/tasks", **{"projectId.eq": project_id, "includeFields": "phase"}):
+        # VERIFIED live 2026-11-12: dependencies -> [{taskId, taskName}], parent -> {taskId, taskName} (a subtask
+        # inherits its parent's phase). taskDescription is not readable through the API.
+        for t in self._get_all("/tasks", **{"projectId.eq": project_id,
+                                            "includeFields": "phase,dependencies,parent"}):
             status = t.get("status") or {}
             label = str(status.get("label") or "")
             due = t.get("dueDate")
@@ -123,7 +126,10 @@ class RocketlaneClient:
                         "phase": (t.get("phase") or {}).get("phaseName"),
                         "status_value": status.get("value"), "status_label": label,
                         "completed": label.strip().lower() in COMPLETED_LABELS,
-                        "due_date": str(due) if due else None})
+                        "due_date": str(due) if due else None,
+                        "parent": (t.get("parent") or {}).get("taskName"),
+                        "depends_on": [str(x.get("taskName")) for x in (t.get("dependencies") or [])
+                                       if isinstance(x, dict) and x.get("taskName")]})
         return out
 
     def list_phases(self, project_id: str) -> list[dict]:

@@ -13,6 +13,7 @@ POLL_SECONDS = 20    # Gmail polling fallback (main.poll_loop)
 STALE_FACTOR = 3     # a loop is stalled once its heartbeat is older than 3 intervals
 
 HB_TICK, HB_SYNC, HB_PUSH, HB_TRACKING = "hb:scheduler_tick", "hb:inbox_sync", "hb:gmail_push", "hb:tracking_sync"
+HB_RL_PUSH = "hb:rocketlane_push"  # last sync triggered by a Rocketlane webhook
 GMAIL_WATCH = "gmail_watch_expires_at"
 
 INTAKE_BUSY = {"RECEIVED", "AWAITING_CALL", "AWAITING_RETRY", "TIER_CONFIRMED"}

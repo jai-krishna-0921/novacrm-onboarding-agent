@@ -1,5 +1,7 @@
 """FastAPI app: Gmail + Retell webhooks (ack fast, work in background), run/escalation API for the dashboard."""
 
+import base64
+import hmac
 import json
 import logging
 import threading
@@ -27,7 +29,7 @@ from app.llm.client import PRICES
 from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
 from app.services import agent_status, directory
-from app.services.agent_status import HB_PUSH, HB_SYNC, HB_TICK, HB_TRACKING, beat
+from app.services.agent_status import HB_PUSH, HB_RL_PUSH, HB_SYNC, HB_TICK, HB_TRACKING, beat
 from app.services.audit import audit, redact
 from app.services.health import HEALTH_INTERVAL, INTEGRATIONS, HealthMonitor, fake_monitor, iso
 from app.services.migration_check import (
@@ -41,7 +43,7 @@ from app.services.migration_check import (
 from app.services.migration_demo import refusal, repair
 from app.services.runner import AWAITING, MID_NODE
 from app.services.store import LATENCY_EDGES_MS
-from app.services.tracking import Tracker, tracking_view
+from app.services.tracking import SKIP_STATUSES, Tracker, tracking_view
 from app.tools.registry import PermanentToolError, ToolFailed
 
 log = logging.getLogger("onboarding")
@@ -97,6 +99,19 @@ class AePatch(BaseModel):
 
 MIGRATION_DEMO_RUN = "migration_demo"  # synthetic run id for the demo fix/reset audit rows
 
+
+RL_SETTLE_SECONDS = 2.0
+
+
+def _basic_password(request: Request) -> str:
+    """Password from an Authorization: Basic header (Rocketlane's webhook auth), else ""."""
+    h = request.headers.get("authorization") or ""
+    if not h.lower().startswith("basic "):
+        return ""
+    try:
+        return base64.b64decode(h[6:].strip(), validate=True).decode().partition(":")[2]
+    except (ValueError, UnicodeDecodeError):
+        return ""
 
 CALL_PROGRESS = {"call_started": "started", "call_ended": "ended"}  # Retell events shown on the dashboard
 
@@ -347,6 +362,51 @@ def create_app(c: Container | None = None) -> FastAPI:
         # redelivery after a failed resume still works and a duplicate after success is ignored.
         bg.add_task(resume_call, payload)
         return Response(status_code=204)
+
+    @app.post("/webhooks/rocketlane", status_code=204)
+    async def rocketlane_webhook(request: Request, bg: BackgroundTasks, token: str = ""):
+        """A task changed in Rocketlane: sync that project now instead of at the next poll. The payload is only a
+        hint (which project); Agent 3 re-reads everything through the API, so nothing in it is trusted."""
+        expected = container().settings.rocketlane_webhook_token
+        if not expected or not hmac.compare_digest((token or _basic_password(request)).encode(), expected.encode()):
+            raise HTTPException(401, "bad token")
+        try:
+            payload = json.loads(await request.body() or b"{}")
+            data = payload.get("data") if isinstance(payload, dict) else None
+            item = (data or {}).get("task") or (data or {}).get("phase") or (data or {}).get("project") or {}
+            project = item.get("project") if isinstance(item.get("project"), dict) else item
+            project_id = str(project.get("projectId") or "")
+        except (ValueError, AttributeError, TypeError) as e:
+            raise HTTPException(400, f"malformed webhook: {type(e).__name__}") from e
+        if project_id.isdigit():
+            bg.add_task(sync_project_soon, project_id)
+        return Response(status_code=204)
+
+    syncing: set[str] = set()
+    syncing_lock = threading.Lock()
+
+    def sync_project_soon(project_id: str) -> None:
+        """One sync per project at a time; events arriving meanwhile are covered by it (it reads the latest)."""
+        run = next((r for r in container().store.list_trackable_runs(SKIP_STATUSES)
+                    if str(r.get("rocketlane_project_id")) == project_id), None)
+        if not run:
+            return
+        with syncing_lock:
+            if run["id"] in syncing:
+                return
+            syncing.add(run["id"])
+        try:
+            time.sleep(RL_SETTLE_SECONDS)  # Rocketlane's reads lag its writes by a moment
+            with lock:
+                tracker().sync(run["id"])
+            beat(container().store, HB_RL_PUSH)
+        except Exception as e:  # noqa: BLE001
+            log.exception("rocketlane webhook: sync %s failed", run["id"])
+            audit(container().store, run["id"], "tracking", "sync_failed", status="failed",
+                  rationale=f"{type(e).__name__}: {e}")
+        finally:
+            with syncing_lock:
+                syncing.discard(run["id"])
 
     def record_call_progress(run_id: str, call_id: str, event: str, reason: str) -> None:
         """Dashboard only: the AE picked up / hung up. The result itself arrives later with call_analyzed, so

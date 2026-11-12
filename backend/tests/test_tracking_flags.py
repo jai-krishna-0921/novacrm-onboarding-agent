@@ -1,8 +1,9 @@
 """Agent 3 watches what people do in the Rocketlane UI beyond ticking tasks (verified live 2026-11-12):
-- a phase marked Completed while its tasks are still open (Rocketlane allows it and leaves the tasks open) is
-  flagged to the team, never announced to the customer;
+- a phase marked Completed by a person is announced to the customer (Rocketlane leaves its tasks open), except
+  Data Migration without a passing migration check, which is flagged to the team instead;
+- a phase (or its first task) under way gets one "has started" update;
 - a task or phase set to Blocked is flagged to the team;
-both clear on their own once fixed in Rocketlane. Nothing about either reaches the customer channel."""
+flags clear on their own once fixed in Rocketlane and never reach the customer channel."""
 
 import pytest
 from test_tracking import INTERNAL_WORDS, mark, project, tracker
@@ -40,41 +41,59 @@ def set_phase(h, phase, label):
     h.world.rocketlane.set_phase_status(project(h)["projectId"], phase, label)
 
 
-def test_phase_marked_completed_with_open_tasks_is_flagged_not_announced(growth):
+DONE = ":white_check_mark: The *{}* phase of your NovaCRM onboarding is complete."
+
+
+def test_phase_marked_completed_by_a_person_is_announced_once(growth):
+    """CS owns the process: marking a phase Completed in Rocketlane is a decision, so the customer hears about it
+    (Rocketlane leaves the phase's tasks open; verified live). No flag for an ordinary phase."""
     h, rid = growth
     t = tracker(h)
     t.sync(rid)
     set_phase(h, "Kickoff", "Completed")
     out = t.sync(rid)
-    assert headlines(h) == []                                   # the customer is not told Kickoff is done
+    assert headlines(h) == [DONE.format("Kickoff")]
+    assert "Kickoff complete: progress posted" in out["actions"] and flags(h, rid, None) == []
+    mark(h, phase="Kickoff")                                    # the tasks catch up later: no second post
+    t.sync(rid)
+    t.sync(rid)
+    assert headlines(h) == [DONE.format("Kickoff")]
+
+
+def test_data_migration_marked_completed_without_a_passing_check_is_flagged_not_announced(growth):
+    h, rid = growth
+    t = tracker(h)
+    t.sync(rid)
+    set_phase(h, "Data Migration", "Completed")
+    t.sync(rid)
+    assert DONE.format("Data Migration") not in headlines(h)
     [f] = flags(h, rid)
-    assert "Kickoff" in f["reason"] and "still open" in f["reason"]
-    assert any("Kickoff" in m for m in internal(h))             # the team hears about it
-    assert any("Kickoff" in a for a in out["actions"])
+    assert "Data Migration" in f["reason"] and "migration check has not passed" in f["reason"]
+    assert any("Data Migration" in m for m in internal(h))      # the team hears about it
     t.sync(rid)
     assert len(flags(h, rid)) == 1 and len(internal(h)) == 1    # once, not every sync
 
 
-def test_flag_clears_when_the_tasks_get_done_and_the_phase_is_announced_once(growth):
+def test_data_migration_flag_clears_once_the_check_passes_and_the_phase_is_announced_once(growth):
     h, rid = growth
-    t = tracker(h)
+    t = tracker(h)                                              # contacts match: the check will pass
     t.sync(rid)
-    set_phase(h, "Kickoff", "Completed")
+    set_phase(h, "Data Migration", "Completed")
     t.sync(rid)
-    mark(h, phase="Kickoff")
+    mark(h, "Data import")                                      # import done -> automatic check -> passed
     t.sync(rid)
     assert flags(h, rid) == [] and flags(h, rid, "resolved")
-    assert headlines(h) == [":white_check_mark: The *Kickoff* phase of your NovaCRM onboarding is complete."]
+    assert headlines(h).count(DONE.format("Data Migration")) == 1
 
 
-def test_flag_clears_when_the_phase_is_reopened(growth):
+def test_data_migration_flag_clears_when_the_phase_is_reopened(growth):
     h, rid = growth
     t = tracker(h)
-    set_phase(h, "Kickoff", "Completed")
+    set_phase(h, "Data Migration", "Completed")
     t.sync(rid)
-    set_phase(h, "Kickoff", "To do")
+    set_phase(h, "Data Migration", "To do")
     t.sync(rid)
-    assert flags(h, rid) == [] and headlines(h) == []
+    assert flags(h, rid) == [] and DONE.format("Data Migration") not in headlines(h)
 
 
 def test_phase_marked_completed_after_its_tasks_is_fine(growth):
@@ -83,7 +102,19 @@ def test_phase_marked_completed_after_its_tasks_is_fine(growth):
     mark(h, phase="Kickoff")
     set_phase(h, "Kickoff", "Completed")
     t.sync(rid)
-    assert flags(h, rid, None) == [] and len(headlines(h)) == 1
+    assert flags(h, rid, None) == [] and headlines(h) == [DONE.format("Kickoff")]
+
+
+def test_phase_started_is_announced_once_with_what_is_under_way(growth):
+    h, rid = growth
+    t = tracker(h)
+    t.sync(rid)
+    mark(h, "Data export", status={"value": 2, "label": "In progress"})
+    t.sync(rid)
+    t.sync(rid)
+    started = [m for m in h.world.slack.channels[h.store.get_run(rid)["slack_channel_id"]]["messages"]
+               if "phase of your NovaCRM onboarding has started" in m]
+    assert len(started) == 1 and "*Data Migration*" in started[0] and "Under way now: Data export" in started[0]
 
 
 @pytest.mark.parametrize("what", ["task", "phase"])
@@ -121,14 +152,14 @@ def test_reflag_after_clearing_posts_again(growth):
 def test_nothing_about_flags_reaches_the_customer_channel(growth):
     h, rid = growth
     t = tracker(h)
-    set_phase(h, "Kickoff", "Completed")
+    set_phase(h, "Data Migration", "Completed")
     mark(h, "Data export", status=BLOCKED)
     set_phase(h, "Go-Live", "Blocked")
     t.sync(rid)
     channel = h.store.get_run(rid)["slack_channel_id"]
     customer = h.world.slack.channels[channel]["messages"][1:]
-    assert customer == []
     assert not any(w in m.lower() for m in customer for w in INTERNAL_WORDS)
+    assert not any("blocked" in m.lower() or "complete" in m.lower() for m in customer)
     assert len(flags(h, rid)) == 3
 
 

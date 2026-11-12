@@ -168,6 +168,8 @@ class RlTask(BaseModel):
     status_label: str = ""
     completed: bool = False
     due_date: str | None = None
+    parent: str | None = None          # parent task name: this is a subtask
+    depends_on: list[str] = []         # names of the tasks this one waits on
 
 
 class RlListTasksIn(BaseModel):

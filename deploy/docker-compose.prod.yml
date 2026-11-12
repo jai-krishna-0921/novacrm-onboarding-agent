@@ -27,6 +27,10 @@ services:
       PUBLIC_BASE_URL: https://${DOMAIN:?}
       PROVIDER_MODE: real
       TRUST_PROXY: "true"  # only Caddy reaches the api: client IP/scheme from X-Forwarded-For/-Proto
+      # Agent 3 polls every live Rocketlane project this often (2 GETs per project); the Rocketlane webhook
+      # makes task changes near-instant, the poll also catches phase-menu changes (no webhook for those).
+      TRACKING_INTERVAL_SECONDS: "15"
+      ROCKETLANE_WEBHOOK_TOKEN: ${ROCKETLANE_WEBHOOK_TOKEN:-}
     depends_on:
       postgres: {condition: service_healthy}
 

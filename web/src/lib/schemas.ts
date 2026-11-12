@@ -103,13 +103,34 @@ export const MigrationCheckRow = z.object({
 });
 export type MigrationCheckRow = z.infer<typeof MigrationCheckRow>;
 
-export const Phase = z.object({ name: z.string(), done: z.number(), total: z.number() });
+export const Phase = z.object({
+  name: z.string(),
+  done: z.number(),
+  total: z.number(),
+  in_progress: z.number().default(0),
+  blocked: z.number().default(0),
+  status: z.string().nullish(), // the phase's own status set in Rocketlane's phase menu
+  complete: z.boolean().nullish(),
+  started: z.boolean().nullish(),
+});
+export const TrackedTask = z.object({
+  name: z.string(),
+  phase: str,
+  status_label: str,
+  completed: z.boolean().default(false),
+  due_date: str,
+  parent: str,
+  depends_on: z.array(z.string()).nullish(),
+});
+export type TrackedTask = z.infer<typeof TrackedTask>;
 export const Tracking = z.object({
   current_phase: str,
   percent_done: num,
   tasks_done: num,
   tasks_total: num,
+  tasks_in_progress: num,
   phases: z.array(Phase).nullish(),
+  tasks: z.array(TrackedTask).nullish(),
   last_synced_at: str,
   handoff_summary: str,
   handed_off_at: str,

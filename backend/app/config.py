@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     google_refresh_token: str = ""
     gmail_pubsub_topic: str = ""
     gmail_push_token: str = ""
+    # Rocketlane outbound webhook (Settings -> Webhooks, sent by a task automation): a shared secret accepted as
+    # the Basic Auth password or ?token=. Empty = the endpoint refuses everything (the 15 s poll still runs).
+    rocketlane_webhook_token: str = ""
     cs_inbox_address: str = ""
 
     retell_api_key: str = ""

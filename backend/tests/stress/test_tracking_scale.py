@@ -97,11 +97,11 @@ def test_50_projects_random_task_order_with_racing_tick_and_sync(settings, fault
         cust = env.world.slack.channels[run["slack_channel_id"]]["messages"]
         heads = Counter(m.splitlines()[0] for m in cust[1:])
         violations += [f"{rid}: progress post repeated {n}x: {h}" for h, n in heads.items() if n > 1]
-        if any(not m.startswith(":white_check_mark:") for m in cust[1:]):
+        if any(not m.startswith((":white_check_mark:", ":arrow_forward:")) for m in cust[1:]):  # done / started
             violations.append(f"{rid}: non-template message in the customer channel")
         snap = (env.store.get_tracking(rid) or {}).get("tasks") or []
         done_phases = {p for p in PHASES if all(t["completed"] for t in snap if t["phase"] == p)}
-        posted = {p for p in PHASES if any(f"The *{p}* phase" in h for h in heads)}
+        posted = {p for p in PHASES if any(f"The *{p}* phase" in h and "complete" in h for h in heads)}
         if not fault_rate and posted != done_phases:
             violations.append(f"{rid}: phases complete in the last snapshot {sorted(done_phases)}, posted {sorted(posted)}")
         batches = {m["batch_id"] for m in env.store.list_migration_checks(rid)}

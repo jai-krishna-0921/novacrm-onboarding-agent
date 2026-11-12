@@ -162,7 +162,9 @@ class FakeRocketlane:
             raise PermanentToolError(f"404: project {project_id} not found")
         return [{"task_id": str(t["taskId"]), "name": t["taskName"], "phase": (t.get("phase") or {}).get("phaseName"),
                  "status_value": t["status"]["value"], "status_label": t["status"]["label"],
-                 "completed": t["status"]["label"] == "Completed", "due_date": t.get("dueDate")}
+                 "completed": t["status"]["label"] == "Completed", "due_date": t.get("dueDate"),
+                 "parent": (t.get("parent") or {}).get("taskName"),
+                 "depends_on": [d["taskName"] for d in t.get("dependencies") or []]}
                 for t in self._project(project_id).get("tasks", [])]
 
     def list_phases(self, project_id: str) -> list[dict]:

@@ -150,7 +150,8 @@ def test_import_completion_runs_the_migration_check_once(ent):
     t.sync(rid)
     mark(h, "Full import")
     out = t.sync(rid)
-    assert out["actions"] == ["'Full import' completed: migration check passed"]
+    assert out["actions"] == ["'Full import' completed: migration check passed",
+                              "Data Migration started: update posted"]
     assert len({r["batch_id"] for r in h.store.list_migration_checks(rid)}) == 1
     assert "PASSED" in task(h, "Migration verified")["taskPrivateNote"]
     t.sync(rid)
@@ -164,7 +165,9 @@ def test_import_completion_with_bad_data_escalates_and_keeps_customer_channel_cl
     mark(h, "Full import")
     t.sync(rid)
     assert len(mig_escalations(h, rid, "open")) == 1
-    assert slack_messages(h) == []
+    # only the customer-safe "phase has started" line; nothing about the failed check
+    assert headlines(h) == [":arrow_forward: The *Data Migration* phase of your NovaCRM onboarding has started."]
+    assert not any(w in m.lower() for m in slack_messages(h) for w in INTERNAL_WORDS)
 
 
 def test_import_completion_with_unreachable_databases_escalates(ent):
@@ -376,7 +379,8 @@ def test_growth_template_is_tracked_with_its_own_task_names(settings):
     t = tracker(h)
     t.sync(rid)
     mark(h, "Data import")
-    assert t.sync(rid)["actions"] == ["'Data import' completed: migration check passed"]
+    assert t.sync(rid)["actions"] == ["'Data import' completed: migration check passed",
+                                      "Data Migration started: update posted"]
     for p in PHASES:
         mark(h, phase=p)
     t.sync(rid)
@@ -500,12 +504,13 @@ def test_list_tasks_normalizes_status_phase_and_due_date(rl):
         "pagination": {"hasMore": False}}))
     assert rl.list_tasks("42") == [
         {"task_id": "9", "name": "Full import", "phase": "Data Migration", "status_value": 3,
-         "status_label": "Completed", "completed": True, "due_date": "2026-11-20"},
+         "status_label": "Completed", "completed": True, "due_date": "2026-11-20", "parent": None,
+         "depends_on": []},
         {"task_id": "10", "name": "Orphan", "phase": None, "status_value": 1, "status_label": "To do",
-         "completed": False, "due_date": None}]
+         "completed": False, "due_date": None, "parent": None, "depends_on": []}]
+    assert route.calls[0].request.url.params["includeFields"] == "phase,dependencies,parent"
     assert route.calls[0].request.url.params["projectId.eq"] == "42"
     # Live API (2026-11-12): without includeFields=phase every task's phase is null, so no phase ever completes.
-    assert route.calls[0].request.url.params["includeFields"] == "phase"
 
 
 @respx.mock
@@ -562,7 +567,28 @@ def test_progress_update_shows_bar_counts_phase_checklist_and_next_phase():
     assert "4 of 16 tasks done (25%)" in msg
     assert ":white_check_mark: Kickoff" in msg and ":hourglass_flowing_sand: Data Migration" in msg
     assert "Configuration" in msg and "Go-Live" in msg
-    assert "Next up: *Data Migration* (1 of 5 tasks done)" in msg
+    assert "Done in this phase: Kickoff task 0 \u00b7 Kickoff task 1 \u00b7 Kickoff task 2" in msg
+    assert "Next up: *Data Migration*: Data Migration task 1" in msg   # the open ones, not the done task 0
+
+
+def test_customer_posts_name_only_customer_safe_tasks_and_show_due_dates_and_dependencies():
+    from app.services.tracking import phase_started, progress_update
+    tasks = [
+        {"name": "Internal sales-to-CS handoff review", "phase": "Kickoff", "completed": True},
+        {"name": "Kickoff call with customer", "phase": "Kickoff", "completed": True},
+        {"name": "Source data export", "phase": "Data Migration", "completed": False, "status_label": "In progress",
+         "due_date": "2026-11-16"},
+        {"name": "Export contacts CSV", "phase": "Data Migration", "completed": False, "parent": "Source data export"},
+        {"name": "Test import", "phase": "Data Migration", "completed": False, "due_date": "2026-11-25",
+         "depends_on": ["Source data export"]},
+    ]
+    done = progress_update("Kickoff", tasks)
+    assert "Kickoff call with customer" in done and "handoff" not in done.lower()
+    assert "Source data export (due 16 Nov)" in done
+    started = phase_started("Data Migration", tasks)
+    assert "Under way now: Source data export" in started
+    assert "Test import (after Source data export)" in started
+    assert "1 smaller step" in started and "Export contacts CSV" not in started  # subtasks are counted, not listed
 
 
 def test_progress_update_on_last_phase_thanks_the_customer():

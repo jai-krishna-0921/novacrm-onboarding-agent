@@ -19,10 +19,11 @@ import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from app.config import Settings, Tier, tier_rules
-from app.guardrails.output import check_handoff
+from app.guardrails.output import check_customer_message, check_handoff
 from app.llm import versions as prompts
 from app.llm.client import LLMError
 from app.llm.schemas import HandoffDraft
@@ -52,30 +53,95 @@ def progress_message(phase: str) -> str:
     return f":white_check_mark: The *{phase}* phase of your NovaCRM onboarding is complete."
 
 
-def progress_update(phase: str, tasks: list[dict]) -> str:
-    """Headline + overall progress bar + phase checklist + what's next. Counts only: task names never appear
-    (the channel is shared with the customer, and task names can be internal)."""
+COMPLETED_PHASE = {"completed", "done"}
+STARTED = {"in progress", "in-progress", "started"}
+
+
+def _label(x: str | None) -> str:
+    return (x or "").strip().lower()
+
+
+def _customer_safe(name: str) -> bool:
+    """Template task names are CS-owned, but some are internal ("Internal sales-to-CS handoff review", "Handoff to
+    support"). A name is only shown to the customer if the same check Agent 2 applies to every post accepts it."""
+    return 0 < len(name) <= 70 and not check_customer_message(name)
+
+
+def _due(t: dict) -> str:
+    d = t.get("due_date") or ""
+    try:
+        return f" (due {date.fromisoformat(d[:10]).strftime('%-d %b')})" if d else ""
+    except ValueError:
+        return ""
+
+
+def _names(ts: list[dict], with_due: bool = False, limit: int = 4) -> str:
+    shown = [t["name"] + (_due(t) if with_due else "") for t in ts if _customer_safe(t["name"])]
+    extra = len(shown) - limit
+    return " \u00b7 ".join(shown[:limit]) + (f" and {extra} more" if extra > 0 else "")
+
+
+def _phase_complete(tasks: list[dict], phase: str, statuses: dict[str, str]) -> bool:
+    return _phase_done(tasks, phase) or _label(statuses.get(phase)) in COMPLETED_PHASE
+
+
+def _phase_started(tasks: list[dict], phase: str, statuses: dict[str, str]) -> bool:
+    mine = [t for t in tasks if t.get("phase") == phase]
+    return _label(statuses.get(phase)) in STARTED or any(
+        t["completed"] or _label(t.get("status_label")) in STARTED for t in mine)
+
+
+def _top(tasks: list[dict], phase: str) -> list[dict]:
+    return [t for t in tasks if t.get("phase") == phase and not t.get("parent")]
+
+
+def _status_line(tasks: list[dict], statuses: dict[str, str]) -> str:
+    def icon(p: str) -> str:
+        if _phase_complete(tasks, p, statuses):
+            return ":white_check_mark:"
+        return ":hourglass_flowing_sand:" if _phase_started(tasks, p, statuses) else ":white_circle:"
+    return "   ".join(f"{icon(p)} {p}" for p in PHASES)
+
+
+def progress_update(phase: str, tasks: list[dict], statuses: dict[str, str] | None = None) -> str:
+    """Headline + what was done + overall progress bar + phase checklist + what's next (with due dates).
+    The channel is shared with the customer: task names pass the customer-message check or are left out."""
+    statuses = statuses or {}
     ours = [t for t in tasks if t.get("phase") in PHASES]
     done, total = sum(bool(t["completed"]) for t in ours), len(ours)
     pct = round(100 * done / total) if total else 0
     bar = "\u2593" * round(pct / 10) + "\u2591" * (10 - round(pct / 10))
-
-    def counts(p: str) -> tuple[int, int]:
-        ts = [t for t in ours if t.get("phase") == p]
-        return sum(bool(t["completed"]) for t in ts), len(ts)
-
-    def icon(p: str) -> str:
-        d, n = counts(p)
-        return ":white_check_mark:" if n and d == n else (":hourglass_flowing_sand:" if d else ":white_circle:")
-
-    lines = [progress_message(phase), f"`{bar}` {done} of {total} tasks done ({pct}%)",
-             "   ".join(f"{icon(p)} {p}" for p in PHASES)]
+    lines = [progress_message(phase)]
+    if finished := _names([t for t in _top(tasks, phase) if t["completed"]]):
+        lines.append(f"Done in this phase: {finished}")
+    lines += [f"`{bar}` {done} of {total} tasks done ({pct}%)", _status_line(tasks, statuses)]
     i = PHASES.index(phase)
     if i + 1 < len(PHASES):
-        d, n = counts(PHASES[i + 1])
-        lines.append(f"Next up: *{PHASES[i + 1]}* ({d} of {n} tasks done).")
+        nxt = PHASES[i + 1]
+        upcoming = _names([t for t in _top(tasks, nxt) if not t["completed"]], with_due=True, limit=3)
+        lines.append(f"Next up: *{nxt}*" + (f": {upcoming}" if upcoming else "."))
     else:
         lines.append("All phases are complete. Thank you for working through it with us!")
+    return "\n".join(lines)
+
+
+def phase_started(phase: str, tasks: list[dict]) -> str:
+    """Once per phase, when it (or its first task) is under way: what the phase covers and what is moving."""
+    PHASES.index(phase)
+    top = _top(tasks, phase)
+    lines = [f":arrow_forward: The *{phase}* phase of your NovaCRM onboarding has started."]
+    if covers := _names(top, with_due=True):
+        lines.append(f"In this phase: {covers}")
+    if moving := _names([t for t in top if _label(t.get("status_label")) in STARTED]):
+        lines.append(f"Under way now: {moving}")
+    waiting = [t for t in top if not t["completed"] and t.get("depends_on") and _customer_safe(t["name"])
+               and all(_customer_safe(d) for d in t["depends_on"])]
+    if waiting:
+        lines.append("Next in line: " + " \u00b7 ".join(
+            f"{t['name']} (after {', '.join(t['depends_on'][:2])})" for t in waiting[:2]))
+    subs = sum(1 for t in tasks if t.get("phase") == phase and t.get("parent"))
+    if subs:
+        lines.append(f"Broken down into {subs} smaller step{'s' if subs != 1 else ''} as well.")
     return "\n".join(lines)
 
 
@@ -105,6 +171,14 @@ def _phase_done(tasks: list[dict], phase: str) -> bool:
     return bool(mine) and all(t["completed"] for t in mine)
 
 
+def _load(raw: str | None) -> dict:
+    try:
+        v = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
 def _find(tasks: list[dict], match: Callable[[str], bool]) -> dict | None:
     return next((t for t in tasks if match(t["name"].strip().lower())), None)
 
@@ -119,14 +193,25 @@ def tracking_view(store: Store, run_id: str) -> dict | None:
     if not t:
         return None
     tasks = t.get("tasks") or []
+    statuses = _load(store.get_kv(f"phases:{run_id}"))
     names = PHASES + [p for p in dict.fromkeys(x.get("phase") for x in tasks) if p and p not in PHASES]
-    phases = [{"name": p, "done": sum(x["completed"] for x in tasks if x.get("phase") == p),
-               "total": sum(x.get("phase") == p for x in tasks)} for p in names]
-    phases = [p for p in phases if p["total"]]
+
+    def phase(p: str) -> dict:
+        mine = [x for x in tasks if x.get("phase") == p]
+        return {"name": p, "done": sum(x["completed"] for x in mine), "total": len(mine),
+                "in_progress": sum(not x["completed"] and _label(x.get("status_label")) in STARTED for x in mine),
+                "blocked": sum(_label(x.get("status_label")) == "blocked" for x in mine),
+                "status": statuses.get(p) or None,
+                "complete": _phase_complete(tasks, p, statuses), "started": _phase_started(tasks, p, statuses)}
+
+    phases = [p for p in map(phase, names) if p["total"]]
     done = sum(x["completed"] for x in tasks)
-    return {"current_phase": next((p["name"] for p in phases if p["done"] < p["total"]), None),
+    return {"current_phase": next((p["name"] for p in phases if not p["complete"]), None),
             "percent_done": round(100 * done / len(tasks)) if tasks else 0, "tasks_done": done,
-            "tasks_total": len(tasks), "phases": phases, "last_synced_at": t.get("synced_at"),
+            "tasks_in_progress": sum(p["in_progress"] for p in phases), "tasks_total": len(tasks),
+            "phases": phases, "last_synced_at": t.get("synced_at"),
+            "tasks": [{k: x.get(k) for k in ("name", "phase", "status_label", "completed", "due_date", "parent",
+                                              "depends_on")} for x in tasks],
             "handoff_summary": t.get("handoff_summary"), "handed_off_at": t.get("handed_off_at")}
 
 
@@ -169,6 +254,13 @@ class Tracker:
         changed = prev is None or sorted(map(_sig, tasks)) != sorted(map(_sig, prev.get("tasks") or []))
         became_done = [t for t in tasks if t["completed"] and not before.get(t["task_id"], {}).get("completed")]
         actions: list[str] = []
+        # Phase statuses a person sets in Rocketlane's phase menu; on a failed read keep the last known ones.
+        prev_statuses = _load(self.store.get_kv(f"phases:{run_id}"))
+        phases = self._read_phases(run)
+        statuses = {p.name: p.status_label for p in phases} if phases is not None else prev_statuses
+        if phases is not None and statuses != prev_statuses:
+            self.store.set_kv(f"phases:{run_id}", json.dumps(statuses))
+            changed = True
 
         # b. import completed -> migration check (before c, so c sees a fresh result)
         if imp := _find(became_done, lambda n: n in IMPORT_TASKS):
@@ -177,15 +269,24 @@ class Tracker:
         if mv := _find(became_done, _is_mv):
             actions.append(self._guard_migration_verified(run_id, run["rocketlane_project_id"], mv,
                                                           before.get(mv["task_id"])))
-        # a. phase completion (after c: a reopened task un-completes Data Migration)
+        # a. phase completion (after c: a reopened task un-completes Data Migration): every task done, or the
+        # phase marked Completed by a person in Rocketlane (CS owns the process). Data Migration marked Completed
+        # without a passing migration check is never announced (rule e flags it instead).
         # State-based: a complete phase whose post never succeeded (no idempotency record) is retried each sync.
         for phase in PHASES:
-            newly = not _phase_done(list(before.values()), phase)
-            if _phase_done(tasks, phase) and (newly or self._unposted(run, phase)):
-                actions.append(self._announce(run, phase, tasks))
+            if not self._may_announce(run_id, tasks, phase, statuses):
+                continue
+            newly = not _phase_complete(list(before.values()), phase, prev_statuses)
+            if newly or self._unposted(run, phase):
+                actions.append(self._announce(run, phase, tasks, statuses))
+        # a2. phase started (once): the phase or one of its tasks is under way
+        for phase in PHASES:
+            if (_phase_started(tasks, phase, statuses) and not _phase_complete(tasks, phase, statuses)
+                    and self._unposted(run, phase, "start") and self._unposted(run, phase)):
+                actions.append(self._announce_start(run, phase, tasks))
 
         # e. flags from the phase menu / Blocked status (after a, so a phase whose tasks just got done is announced)
-        actions += self._reconcile_flags(run, tasks)
+        actions += self._reconcile_flags(run, tasks, phases)
 
         self.store.upsert_tracking(run_id, tasks=tasks, synced_at=now())
         # d. handoff: state-based so a failed note write is retried on the next sync
@@ -198,10 +299,40 @@ class Tracker:
         return {"run_id": run_id, "changed": changed, "actions": actions, "tracking": tracking_view(self.store, run_id)}
 
     # ---------- rule a ----------
-    def _unposted(self, run: dict, phase: str) -> bool:
-        return bool(run.get("slack_channel_id")) and self.store.get_idem(f"{run['id']}:progress:{phase}") is None
+    def _read_phases(self, run: dict) -> list | None:
+        try:
+            return self.registry.call(AGENT, "rocketlane_list_phases", {"project_id": run["rocketlane_project_id"]},
+                                      run_id=run["id"], rationale="read phase statuses set in Rocketlane",
+                                      audit_success=False).phases
+        except ToolFailed:
+            return None
 
-    def _announce(self, run: dict, phase: str, tasks: list[dict]) -> str:
+    def _may_announce(self, run_id: str, tasks: list[dict], phase: str, statuses: dict[str, str]) -> bool:
+        if _phase_done(tasks, phase):
+            return True
+        if _label(statuses.get(phase)) not in COMPLETED_PHASE:
+            return False
+        return phase != "Data Migration" or self.migration_state(run_id)[0] in ACCEPTED
+
+    def _unposted(self, run: dict, phase: str, kind: str = "progress") -> bool:
+        return bool(run.get("slack_channel_id")) and self.store.get_idem(f"{run['id']}:{kind}:{phase}") is None
+
+    def _announce_start(self, run: dict, phase: str, tasks: list[dict]) -> str:
+        key = f"{run['id']}:start:{phase}"
+        text = self.store.get_kv(f"text:{key}")
+        if text is None:
+            text = phase_started(phase, tasks)
+            self.store.set_kv(f"text:{key}", text)
+        try:
+            post_customer_update(self.store, self.registry, run, text, key=key, requested_by="tracking",
+                                 reason=f"{phase} is under way (once per phase)")
+        except ToolFailed as e:
+            audit(self.store, run["id"], AGENT, "phase_started", status="failed",
+                  rationale=f"{phase} started but the Slack post failed: {e}")
+            return f"{phase} started (Slack post failed)"
+        return f"{phase} started: update posted"
+
+    def _announce(self, run: dict, phase: str, tasks: list[dict], statuses: dict[str, str] | None = None) -> str:
         channel = run.get("slack_channel_id")
         if not channel:
             audit(self.store, run["id"], AGENT, "phase_complete", status="degraded",
@@ -212,7 +343,7 @@ class Tracker:
         # is really missing, post) the same message, not one with newer task counts.
         text = self.store.get_kv(f"text:{key}")
         if text is None:
-            text = progress_update(phase, tasks)
+            text = progress_update(phase, tasks, statuses)
             self.store.set_kv(f"text:{key}", text)
         try:
             post_customer_update(self.store, self.registry, run, text, key=key, requested_by="tracking",
@@ -312,22 +443,20 @@ class Tracker:
         audit(self.store, run_id, AGENT, "escalate", rationale=reason, status="escalated")
 
     # ---------- rule e ----------
-    def _wanted_flags(self, run: dict, tasks: list[dict]) -> dict[str, str] | None:
+    def _wanted_flags(self, run: dict, tasks: list[dict], phases: list | None) -> dict[str, str] | None:
         """flag id -> reason for everything that needs a look right now; None if the phases couldn't be read."""
-        try:
-            phases = self.registry.call(AGENT, "rocketlane_list_phases", {"project_id": run["rocketlane_project_id"]},
-                                        run_id=run["id"], rationale="read phase statuses set in Rocketlane",
-                                        audit_success=False).phases
-        except ToolFailed:
+        if phases is None:
             return None
         out: dict[str, str] = {}
         for ph in phases:
             label = ph.status_label.strip().lower()
             open_ = [t["name"] for t in tasks if t.get("phase") == ph.name and not t["completed"]]
-            if label in ("completed", "done") and open_:
+            if (label in COMPLETED_PHASE and open_ and ph.name == "Data Migration"
+                    and self.migration_state(run["id"])[0] not in ACCEPTED):
                 out[f"phase-done:{ph.name}"] = (
-                    f"The {ph.name} phase was marked Completed in Rocketlane but {len(open_)} of its tasks are still "
-                    f"open ({', '.join(open_[:5])}). Not announced to the customer until they are done.")
+                    f"The {ph.name} phase was marked Completed in Rocketlane but the migration check has not "
+                    f"passed ({len(open_)} task(s) still open: {', '.join(open_[:5])}). Not announced to the "
+                    "customer until the migration is verified.")
             elif label == "blocked":
                 out[f"blocked-phase:{ph.name}"] = f"The {ph.name} phase is marked Blocked in Rocketlane."
         for t in tasks:
@@ -336,9 +465,9 @@ class Tracker:
                                                        "marked Blocked in Rocketlane.")
         return out
 
-    def _reconcile_flags(self, run: dict, tasks: list[dict]) -> list[str]:
+    def _reconcile_flags(self, run: dict, tasks: list[dict], phases: list | None) -> list[str]:
         rid = run["id"]
-        wanted = self._wanted_flags(run, tasks)
+        wanted = self._wanted_flags(run, tasks, phases)
         if wanted is None:  # phase statuses unreadable this time: keep what's open, the task rules still ran
             return []
         prefix = f"{rid}:tracking:"
