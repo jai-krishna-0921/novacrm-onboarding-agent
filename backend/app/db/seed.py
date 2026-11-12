@@ -6,6 +6,7 @@ from sqlalchemy.engine import make_url
 
 from app.config import Settings
 from app.db.store import PgStore
+from app.services.store import Store
 
 DEMO_DATABASES = {"mig_source", "mig_dest"}
 FIRST = ["Ava", "Ben", "Chloe", "Dev", "Elena", "Farah", "Gil", "Hana", "Ivan", "Jia"]
@@ -56,14 +57,19 @@ def seed_migration_demo(source_url: str, dest_url: str) -> tuple[int, int]:
     return _seed_table(source_url, source, True), _seed_table(dest_url, dest, False)
 
 
+def seed_ae(store: Store, s: Settings) -> str:
+    """Insert the DEMO_AE_* account only if absent: once it exists the dashboard owns the row, and a restart must
+    not undo its edits (name, phone, deactivation)."""
+    if not (s.demo_ae_email and s.demo_ae_phone):
+        return "DEMO_AE_EMAIL / DEMO_AE_PHONE not set: AE directory left unchanged"
+    if store.add_ae(s.demo_ae_email, s.demo_ae_name or s.demo_ae_email, s.demo_ae_phone, True):
+        return f"AE directory: added {s.demo_ae_email} -> ***{s.demo_ae_phone[-4:]}"
+    return f"AE directory: {s.demo_ae_email} already present, left unchanged"
+
+
 def main() -> None:
     s = Settings()
-    store = PgStore(s.database_url)
-    if s.demo_ae_email and s.demo_ae_phone:
-        store.upsert_ae(s.demo_ae_email, s.demo_ae_name or s.demo_ae_email, s.demo_ae_phone, True)
-        print(f"AE directory: {s.demo_ae_email} -> ***{s.demo_ae_phone[-4:]}")
-    else:
-        print("DEMO_AE_EMAIL / DEMO_AE_PHONE not set: AE directory left unchanged")
+    print(seed_ae(PgStore(s.database_url), s))
 
     from langgraph.checkpoint.postgres import PostgresSaver
 

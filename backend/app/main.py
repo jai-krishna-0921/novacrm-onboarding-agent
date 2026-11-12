@@ -7,23 +7,37 @@ import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi import Path as FastPath
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.auth import Auth
 from app.config import Settings
 from app.container import Container
+from app.db.seed import demo_contacts
 from app.guardrails.decision import CallResult
 from app.llm.client import PRICES
 from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
+from app.services import agent_status, directory
+from app.services.agent_status import HB_PUSH, HB_SYNC, HB_TICK, HB_TRACKING, beat
 from app.services.audit import audit, redact
-from app.services.migration_check import MigrationDataUnavailable, run_migration_check
+from app.services.health import HEALTH_INTERVAL, INTEGRATIONS, HealthMonitor, fake_monitor, iso
+from app.services.migration_check import (
+    MigrationDataUnavailable,
+    find_problems,
+    row_problems,
+    run_migration_check,
+)
+from app.services.migration_demo import refusal, repair
 from app.services.runner import AWAITING, MID_NODE
 from app.services.store import LATENCY_EDGES_MS
 from app.services.tracking import Tracker, tracking_view
@@ -62,6 +76,27 @@ def _bucket_labels() -> list[str]:
 LIMIT = Query(25, ge=1, le=200)
 OFFSET = Query(0, ge=0, le=10**9)  # bounded: a value past BIGINT would be a Postgres error (500)
 ROW_ID = FastPath(ge=1, le=2**63 - 1)
+
+
+class AeIn(BaseModel):
+    email: str = Field(max_length=320)
+    name: str = Field(max_length=500)
+    phone: str = Field(max_length=64)
+    active: bool = True
+
+
+class AePatch(BaseModel):
+    name: str | None = Field(default=None, max_length=500)
+    phone: str | None = Field(default=None, max_length=64)
+    active: bool | None = None
+
+
+MIGRATION_DEMO_RUN = "migration_demo"  # synthetic run id for the demo fix/reset audit rows
+
+
+def _canonical(rows: list[dict]) -> list[tuple]:
+    """Row multiset in a fixed order, to tell whether a demo write would change anything."""
+    return sorted((str(r["id"]), r.get("name") or "", r.get("email") or "") for r in rows)
 
 
 class Resolution(BaseModel):
@@ -110,6 +145,7 @@ def create_app(c: Container | None = None) -> FastAPI:
 
             if cursor is None:
                 k.store.set_kv(CURSOR, k.inbox.current_history_id())
+                beat(k.store, HB_SYNC)
                 return
             try:
                 emails, new_cursor = k.inbox.new_deal_emails(cursor, relevant)
@@ -124,6 +160,7 @@ def create_app(c: Container | None = None) -> FastAPI:
                 run_id, _ = k.runner.start(e.model_dump())
                 log.info("deal email %s -> run %s", e.message_id, run_id)
             k.store.set_kv(CURSOR, new_cursor)
+            beat(k.store, HB_SYNC)
 
     def tick(now: float | None = None) -> None:
         """Scheduler: resume due retry waits; reconcile calls whose webhook never arrived; escalate runs whose
@@ -165,6 +202,8 @@ def create_app(c: Container | None = None) -> FastAPI:
         if k.registry is not None and now - last_tracking[0] >= k.settings.tracking_interval_seconds:
             last_tracking[0] = now
             track_all()
+            beat(k.store, HB_TRACKING, now)
+        beat(k.store, HB_TICK, now)  # status page: a tick that raised above never beats, so it shows as stalled
 
     last_tracking = [float("-inf")]
 
@@ -208,6 +247,15 @@ def create_app(c: Container | None = None) -> FastAPI:
             except Exception:  # noqa: BLE001 - keep polling; errors are logged
                 log.exception("inbox poll failed")
 
+    def health_loop() -> None:
+        while True:
+            try:
+                container().health.run_once()
+            except Exception:  # noqa: BLE001
+                log.exception("integration health check failed")
+            if stop.wait(HEALTH_INTERVAL):
+                return
+
     def tick_loop(seconds: int) -> None:
         while not stop.wait(seconds):
             try:
@@ -225,13 +273,16 @@ def create_app(c: Container | None = None) -> FastAPI:
         if k.start_poller and k.inbox is not None:
             threading.Thread(target=poll_loop, args=(20,), daemon=True).start()
         if k.start_poller:
-            threading.Thread(target=tick_loop, args=(5,), daemon=True).start()
+            threading.Thread(target=tick_loop, args=(agent_status.TICK_SECONDS,), daemon=True).start()
+        if k.start_poller and k.health is not None and k.settings.provider_mode == "real":
+            threading.Thread(target=health_loop, daemon=True).start()
         yield
         stop.set()
 
     app = FastAPI(title="NovaCRM onboarding agent", lifespan=lifespan)
     app.state.container = c
     app.state.tick = tick
+    app.state.started_at = time.time()
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"],
                        allow_headers=["*"])
     auth = Auth(lambda: container().settings)
@@ -245,6 +296,7 @@ def create_app(c: Container | None = None) -> FastAPI:
         # can't delay it past Pub/Sub's ack deadline. The sync itself is coalesced (see push_sync).
         if token != container().settings.gmail_push_token or not token:
             raise HTTPException(401, "bad push token")
+        bg.add_task(beat, container().store, HB_PUSH)
         bg.add_task(push_sync)
         return {"ok": True}
 
@@ -426,7 +478,161 @@ def create_app(c: Container | None = None) -> FastAPI:
         k = container()
         if k.inbox is None:
             raise HTTPException(400, "gmail not configured (PROVIDER_MODE=fake)")
-        return k.inbox.watch(k.settings.gmail_pubsub_topic)
+        out = k.inbox.watch(k.settings.gmail_pubsub_topic)
+        if exp := (out or {}).get("expiration"):  # epoch milliseconds (string)
+            k.store.set_kv(agent_status.GMAIL_WATCH, iso(int(exp) / 1000))
+        return out
+
+    # ---------- agent status page (reads heartbeats, audit rows and cached health; never calls out) ----------
+    fake_health: list[HealthMonitor] = []
+
+    def integrations() -> list[dict]:
+        k = container()
+        if k.health is not None:
+            return k.health.snapshot()
+        if k.settings.provider_mode == "fake":
+            if not fake_health:
+                fake_health.append(fake_monitor())
+            return fake_health[0].snapshot()
+        return [{"name": n, "ok": False, "detail": "health monitor not running", "checked_at": None}
+                for n in INTEGRATIONS]
+
+    @app.get("/agents/status")
+    def agents_status():
+        k = container()
+        return agent_status.build_status(k.store, k.settings, integrations(), now=time.time(),
+                                         started_at=app.state.started_at, inbox_enabled=k.inbox is not None)
+
+    def who(request: Request) -> str:
+        """The signed-in user (set by the auth guard); the admin name when auth is off (tests/fake only)."""
+        return getattr(request.state, "user", None) or container().settings.admin_username
+
+    # ---------- AE directory (who may trigger onboarding and gets the tier call; no delete: deactivate) ----------
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        """/aes bodies carry phone numbers: answer with a plain-string detail that never echoes the input.
+        Every other route keeps FastAPI's default 422."""
+        if request.url.path == "/aes" or request.url.path.startswith("/aes/"):
+            msgs = [f"{'.'.join(str(p) for p in e.get('loc', ())[1:]) or 'body'}: {e.get('msg', 'invalid')}"
+                    for e in exc.errors()]
+            return JSONResponse({"detail": "; ".join(msgs) or "invalid request"}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
+
+    @app.get("/aes")
+    def list_aes():
+        return [directory.public(a) for a in container().store.list_aes()]
+
+    @app.get("/aes/history")
+    def aes_history(limit: int = LIMIT):
+        return container().store.list_audit(directory.AUDIT_RUN)[::-1][:limit]
+
+    @app.post("/aes", status_code=201)
+    def create_ae(body: AeIn, request: Request):
+        k = container()
+        try:
+            email, name = directory.clean_email(body.email), directory.clean_name(body.name)
+            phone = directory.clean_phone(body.phone)
+        except directory.Invalid as e:
+            raise HTTPException(422, str(e)) from e
+        if not k.store.add_ae(email, name, phone, body.active):
+            raise HTTPException(409, f"an AE with email {email} already exists")
+        directory.audit_change(k.store, who(request), "ae_create", email, {},
+                               {"name": name, "phone": phone, "active": body.active})
+        return directory.public(k.store.lookup_ae(email) or {})
+
+    @app.patch("/aes/{email}")
+    def update_ae(email: str, body: AePatch, request: Request):
+        k = container()
+        current = k.store.lookup_ae(email)
+        if not current:
+            raise HTTPException(404, "AE not found")
+        try:
+            fields = {k_: v for k_, v in dict(
+                name=None if body.name is None else directory.clean_name(body.name),
+                phone=None if body.phone is None else directory.clean_phone(body.phone),
+                active=body.active).items() if v is not None}
+        except directory.Invalid as e:
+            raise HTTPException(422, str(e)) from e
+        changed = {f: v for f, v in fields.items() if current.get(f) != v}
+        if not changed:
+            return directory.public(current)
+        updated = k.store.update_ae(current["email"], **changed)
+        if updated is None:
+            raise HTTPException(404, "AE not found")
+        directory.audit_change(k.store, who(request), "ae_update", current["email"],
+                               {f: current.get(f) for f in changed}, changed)
+        return directory.public(updated)
+
+    # ---------- migration demo data (source vs destination contacts, same logic as the migration check) ----------
+    def contacts() -> tuple[list[dict], list[dict]]:
+        k = container()
+        if k.migration_contacts is None:
+            raise HTTPException(503, "migration databases are not configured")
+        try:
+            return k.migration_contacts()
+        except MigrationDataUnavailable as e:
+            raise HTTPException(503, f"migration databases unreachable: {e}") from e
+
+    def summary(source: list[dict], dest: list[dict]) -> dict:
+        return {"source_count": len(source), "dest_count": len(dest), "problems": find_problems(source, dest),
+                "last_check": container().store.latest_migration_check()}
+
+    @app.get("/migration/summary")
+    def migration_summary():
+        return summary(*contacts())
+
+    @app.get("/migration/data")
+    def migration_data(side: Literal["source", "dest"] = "dest", limit: int = Query(10, ge=1, le=200),
+                       offset: int = OFFSET, only_problems: bool = False):
+        source, dest = contacts()
+        problems = find_problems(source, dest)
+        rows = [{"id": r["id"], "name": r.get("name"), "email": r.get("email"),
+                 "problems": row_problems(r, side, problems)} for r in (source if side == "source" else dest)]
+        if only_problems:
+            rows = [r for r in rows if r["problems"]]
+        return {"total": len(rows), "rows": rows[offset:offset + limit]}
+
+    demo_lock = threading.Lock()
+
+    def demo_write(action: str, request: Request, target) -> dict:
+        k = container()
+        if why := refusal(k.settings):
+            raise HTTPException(409, why)
+        if k.migration_write is None:
+            raise HTTPException(503, "migration destination is not configured")
+        by = who(request)
+        with demo_lock:  # not the graph lock: a slow demo database must never stall webhooks or the scheduler
+            source, dest = contacts()
+            before = find_problems(source, dest)
+            rows = target(source, dest)
+            changed = _canonical(rows) != _canonical(dest)
+
+            def record(status: str, note: str) -> None:
+                audit(k.store, MIGRATION_DEMO_RUN, "migration", f"demo_{action}", input={"by": by}, status=status,
+                      output={"changed": changed and status == "ok", "before": before,
+                              "after": find_problems(source, rows) if status == "ok" else before},
+                      rationale=f"{by} ran demo {action} on the demo destination ({note})")
+
+            if not changed:
+                record("ok", "already in that state, nothing written")
+                return summary(source, dest)
+            try:
+                k.migration_write(rows)
+            except SQLAlchemyError as e:
+                record("failed", f"write failed ({type(e).__name__}); destination unchanged")
+                raise HTTPException(503, f"migration destination write failed: {type(e).__name__}") from e
+            record("ok", "rows rewritten")  # audited before the re-read: the write happened whatever comes next
+            return summary(*contacts())
+
+    @app.post("/migration/demo/fix")
+    def migration_demo_fix(request: Request):
+        """Repair the demo destination: drop the duplicate row, fill blanks from the source, add missing rows."""
+        return demo_write("fix", request, repair)
+
+    @app.post("/migration/demo/reset")
+    def migration_demo_reset(request: Request):
+        """Restore the planted defects (duplicate id 23, missing email on id 17)."""
+        return demo_write("reset", request, lambda source, dest: demo_contacts()[1])
 
     # ---------- dashboard UI (static, same-origin; the login guard in app/auth.py covers it) ----------
     @app.get("/ui", include_in_schema=False)

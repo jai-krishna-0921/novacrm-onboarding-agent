@@ -3,6 +3,7 @@
 import sys
 
 from app.config import PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER, PLACEHOLDER_PM, Settings, tier_rules
+from app.services.health import real_checks
 
 s = Settings()
 results: list[tuple[str, bool, str]] = []
@@ -49,38 +50,8 @@ def rocketlane():
     return "templates are PROJECT templates; owner/PM/CSMs and role placeholders exist"
 
 
-def anthropic():
-    need("anthropic_api_key")
-    from langchain_anthropic import ChatAnthropic
-    ChatAnthropic(model=s.llm_model, api_key=s.anthropic_api_key, max_tokens=1).invoke("ping")
-    return f"{s.llm_model} reachable (1-token call)"
-
-
-def retell():
-    need("retell_api_key", "retell_agent_id", "retell_from_number")
-    from retell import Retell
-    agent = Retell(api_key=s.retell_api_key).agent.retrieve(s.retell_agent_id)
-    hook = getattr(agent, "webhook_url", "")
-    if not hook or not hook.startswith(s.public_base_url):
-        raise RuntimeError(f"agent webhook_url {hook!r} does not match PUBLIC_BASE_URL")
-    return f"agent {agent.agent_name!r}, webhook ok"
-
-
-def slack():
-    need("slack_bot_token")
-    from slack_sdk import WebClient
-    a = WebClient(token=s.slack_bot_token).auth_test()
-    return f"bot {a['user']} in workspace {a['team']}"
-
-
-def gmail():
-    need("google_client_id", "google_client_secret", "google_refresh_token", "cs_inbox_address")
-    from app.providers.real.gmail import build_service
-    p = build_service(s.google_client_id, s.google_client_secret, s.google_refresh_token).users().getProfile(
-        userId="me").execute()
-    if p["emailAddress"].lower() != s.cs_inbox_address.lower():
-        raise RuntimeError(f"token is for {p['emailAddress']}, CS_INBOX_ADDRESS is {s.cs_inbox_address}")
-    return f"inbox {p['emailAddress']}"
+checks = real_checks(s)  # shared with the dashboard's integration health (app/services/health.py)
+anthropic, retell, slack, gmail = checks["anthropic"], checks["retell"], checks["slack"], checks["gmail"]
 
 
 def public_url():

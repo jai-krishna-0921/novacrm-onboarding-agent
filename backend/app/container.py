@@ -19,7 +19,9 @@ class Container:
     voice: Any = None            # RetellVoice-like: get_call(call_id) -> call object, for webhook reconciliation
     registry: Any = None         # ToolRegistry, for actions taken outside the graph (migration check)
     migration_contacts: Any = None  # () -> (source_rows, dest_rows) for the migration check
+    migration_write: Any = None     # (rows) -> None: replace the destination contacts (demo fix/reset only)
     llm: Any = None              # LLM for the tracking agent's handoff draft (None -> static template)
+    health: Any = None           # HealthMonitor: cached integration checks for GET /agents/status
 
 
 class DbDirectory:
@@ -73,11 +75,16 @@ def build_container(s: Settings) -> Container:
                           kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
     checkpointer = PostgresSaver(pool)
     from app.services.migration_check import load_contacts
+    from app.services.migration_demo import replace_contacts
 
     registry = build_registry(store, providers)
     llm = LangChainLLM(store, s.llm_model, s.anthropic_api_key)
     deps = Deps(s, store, registry, llm)
     graph = build_graph(deps, checkpointer)
-    return Container(settings=s, store=store, runner=Runner(graph, store), inbox=inbox, voice=voice,
+    from app.services.health import HealthMonitor, fake_monitor, real_checks
+
+    health = HealthMonitor(real_checks(s)) if s.provider_mode == "real" else fake_monitor()
+    return Container(settings=s, store=store, runner=Runner(graph, store), inbox=inbox, voice=voice, health=health,
                      registry=registry, llm=LangChainLLM(store, s.llm_handoff_model, s.anthropic_api_key),
-                     migration_contacts=lambda: (load_contacts(s.mig_source_url), load_contacts(s.mig_dest_url)))
+                     migration_contacts=lambda: (load_contacts(s.mig_source_url), load_contacts(s.mig_dest_url)),
+                     migration_write=lambda rows: replace_contacts(s.mig_dest_url, rows))

@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.services.store import (
+    AE_FIELDS,
     CALL_TOOL,
     CREATE_PROJECT_TOOL,
     DEAD_STATUSES,
@@ -85,7 +86,8 @@ escalations = Table(
 )
 kv = Table("kv", metadata, Column("key", String, primary_key=True), Column("value", Text))
 ae_directory = Table("ae_directory", metadata, Column("email", String, primary_key=True), Column("name", String),
-                     Column("phone", String), Column("active", Boolean, nullable=False, default=True))
+                     Column("phone", String), Column("active", Boolean, nullable=False, default=True),
+                     Column("updated_at", String))
 migration_checks = Table(
     "migration_checks", metadata, Column("id", BigInteger, primary_key=True, autoincrement=True),
     Column("run_id", String, index=True), Column("batch_id", String), Column("ts", String),
@@ -188,6 +190,15 @@ class PgStore:
     def list_migration_checks(self, run_id: str) -> list[dict]:
         return self._list(migration_checks, run_id)
 
+    def latest_migration_check(self) -> dict | None:
+        m = migration_checks.c
+        with self.engine.connect() as c:
+            last = c.execute(select(m.batch_id, m.ts, m.run_id).order_by(m.id.desc()).limit(1)).first()
+            if last is None:
+                return None
+            passed = c.execute(select(func.bool_and(m.passed)).where(m.batch_id == last.batch_id)).scalar()
+        return {"batch_id": last.batch_id, "ts": last.ts, "passed": bool(passed), "run_id": last.run_id}
+
     # ---------- observability: filtering, paging and aggregation run in SQL ----------
     def _page(self, table, fields: tuple, limit: int, offset: int, since: str | None, **eq: str | None) -> dict:
         where = [table.c[k] == v for k, v in eq.items() if v is not None]
@@ -287,6 +298,22 @@ class PgStore:
             "llm_calls": n_llm, "llm_cost_usd": round(float(cost or 0), 6),
         }
 
+    def activity_stats(self, since: str) -> dict:
+        a, t = audit_log.c, tool_calls.c
+        newest = select(a.agent, a.ts, a.step, a.rationale, a.status).where(
+            a.id.in_(select(func.max(a.id)).group_by(a.agent)))
+        with self.engine.connect() as c:
+            last = {r.agent: {"ts": r.ts, "step": r.step, "rationale": r.rationale, "status": r.status}
+                    for r in c.execute(newest)}
+            steps = {(r[0], r[1], r[2]): r[3] for r in c.execute(
+                select(a.agent, a.step, a.status, func.count()).group_by(a.agent, a.step, a.status))}
+            tq = select(t.agent, t.tool, t.status, func.count()).group_by(t.agent, t.tool, t.status)
+            tools = {(r[0], r[1], r[2]): r[3] for r in c.execute(tq)}
+            tools_since = {(r[0], r[1], r[2]): r[3] for r in c.execute(tq.where(t.ts >= since))}
+            runs_since = c.execute(select(func.count()).select_from(runs)
+                                   .where(runs.c.created_at >= since)).scalar_one()
+        return {"last": last, "steps": steps, "tools": tools, "tools_since": tools_since, "runs_since": runs_since}
+
     # project tracking (Agent 3)
     def get_tracking(self, run_id: str) -> dict | None:
         with self.engine.connect() as c:
@@ -375,13 +402,33 @@ class PgStore:
                    .on_conflict_do_update(index_elements=["key"], set_={"value": value}))
 
     def upsert_ae(self, email: str, name: str, phone: str, active: bool = True) -> None:
-        e = email.strip().lower()
-        self._exec(pg_insert(ae_directory).values(email=e, name=name, phone=phone, active=active)
+        e, ts = email.strip().lower(), now()
+        self._exec(pg_insert(ae_directory).values(email=e, name=name, phone=phone, active=active, updated_at=ts)
                    .on_conflict_do_update(index_elements=["email"], set_={"name": name, "phone": phone,
-                                                                         "active": active}))
+                                                                         "active": active, "updated_at": ts}))
 
     def lookup_ae(self, email: str) -> dict | None:
         with self.engine.connect() as c:
             r = c.execute(select(ae_directory).where(ae_directory.c.email == email.strip().lower())).first()
+        return dict(r._mapping) if r else None
+
+    def add_ae(self, email: str, name: str, phone: str, active: bool = True) -> bool:
+        stmt = (pg_insert(ae_directory).values(email=email.strip().lower(), name=name, phone=phone, active=active,
+                                               updated_at=now())
+                .on_conflict_do_nothing(index_elements=["email"]).returning(ae_directory.c.email))
+        with self.engine.begin() as c:
+            return c.execute(stmt).first() is not None
+
+    def list_aes(self) -> list[dict]:
+        with self.engine.connect() as c:
+            return _rows(c.execute(select(ae_directory).order_by(func.lower(ae_directory.c.name), ae_directory.c.email)))
+
+    def update_ae(self, email: str, **fields: Any) -> dict | None:
+        if unknown := set(fields) - AE_FIELDS:
+            raise ValueError(f"unknown AE fields: {unknown}")
+        stmt = (ae_directory.update().where(ae_directory.c.email == email.strip().lower())
+                .values(**fields, updated_at=now()).returning(*ae_directory.c))
+        with self.engine.begin() as c:
+            r = c.execute(stmt).first()
         return dict(r._mapping) if r else None
 

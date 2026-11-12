@@ -109,8 +109,47 @@ def test_kv_cursor(store):
 def test_ae_directory(store):
     store.upsert_ae("Jai@NovaCRM.example", "Jai Krishna", "+919876543210", True)
     ae = store.lookup_ae("jai@novacrm.example")
+    assert ae.pop("updated_at")
     assert ae == {"email": "jai@novacrm.example", "name": "Jai Krishna", "phone": "+919876543210", "active": True}
     assert store.lookup_ae("ghost@x.example") is None
+
+
+def test_add_ae_inserts_only_when_the_email_is_absent(store):
+    """The startup seed and POST /aes use add_ae: an existing row (e.g. edited in the UI) is never overwritten."""
+    assert store.add_ae(" Maya@NovaCRM.example ", "Maya Rao", "+14155550101") is True
+    store.update_ae("maya@novacrm.example", phone="+14155550199")
+    assert store.add_ae("maya@novacrm.example", "Seed Name", "+10000000000", True) is False
+    ae = store.lookup_ae("maya@novacrm.example")
+    assert (ae["name"], ae["phone"], ae["active"]) == ("Maya Rao", "+14155550199", True)
+
+
+def test_list_aes_sorted_by_name(store):
+    store.add_ae("z@x.example", "Zed", "+14155550101")
+    store.add_ae("a@x.example", "Ann", "+14155550102", False)
+    assert [(a["email"], a["active"]) for a in store.list_aes()] == [("a@x.example", False), ("z@x.example", True)]
+    assert all(a["updated_at"] for a in store.list_aes())
+
+
+def test_update_ae_changes_only_given_fields_and_bumps_updated_at(store):
+    store.add_ae("jai@novacrm.example", "Jai", "+919876543210")
+    before = store.lookup_ae("jai@novacrm.example")
+    after = store.update_ae("JAI@novacrm.example", active=False)
+    assert after == store.lookup_ae("jai@novacrm.example")
+    assert (after["name"], after["phone"], after["active"]) == ("Jai", "+919876543210", False)
+    assert after["updated_at"] >= before["updated_at"]
+    assert store.update_ae("ghost@x.example", name="X") is None
+    with pytest.raises(ValueError):
+        store.update_ae("jai@novacrm.example", updated_at="2000-01-01")
+
+
+def test_latest_migration_check_is_the_newest_batch_across_runs(store):
+    assert store.latest_migration_check() is None
+    for run, batch, ts, ok in (("r1", "b1", "2026-11-12T10:00:00+00:00", True),
+                               ("r2", "b2", "2026-11-12T11:00:00+00:00", True),
+                               ("r2", "b2", "2026-11-12T11:00:00+00:00", False)):
+        store.add_migration_check(dict(run_id=run, batch_id=batch, ts=ts, check_name="c", passed=ok, details={}))
+    assert store.latest_migration_check() == {"batch_id": "b2", "ts": "2026-11-12T11:00:00+00:00",
+                                              "passed": False, "run_id": "r2"}
 
 
 def test_migration_checks_roundtrip_per_run(store):
@@ -269,3 +308,22 @@ def test_overview_stats(store):
     assert o["email_to_project"]["runs"] == 1 and 89 <= o["email_to_project"]["avg_seconds"] <= 91
     assert o["calls"] == {"placed": 2, "confirmed": 1, "unclear": 2, "no_answer": 1}
     assert o["llm_calls"] == 2 and o["llm_cost_usd"] == 0.75
+
+
+def test_activity_stats_newest_row_per_agent_and_counts(store):
+    for i, (agent, step, status) in enumerate([("intake", "check_sender", "ok"), ("comms", "setup_channel", "ok"),
+                                               ("intake", "validate", "blocked"), ("comms", "setup_channel", "ok")]):
+        store.add_audit(dict(run_id="r1", ts=f"2026-11-12T10:00:0{i}+00:00", agent=agent, step=step, input=None,
+                             output=None, rationale=f"why {i}", status=status))
+    for ts in ("2026-11-11T09:00:00+00:00", "2026-11-12T09:00:00+00:00"):
+        store.add_tool_call(dict(run_id="r1", ts=ts, agent="intake", tool="voice_start_call", args={}, result={},
+                                 status="ok", attempt=1, latency_ms=5, idempotency_key=None))
+    store.upsert_run("r1", status="RECEIVED")
+    st = store.activity_stats("2026-11-12T00:00:00+00:00")
+    assert st["last"]["intake"] == {"ts": "2026-11-12T10:00:02+00:00", "step": "validate", "rationale": "why 2",
+                                    "status": "blocked"}
+    assert st["last"]["comms"]["rationale"] == "why 3"
+    assert st["steps"][("comms", "setup_channel", "ok")] == 2
+    assert st["tools"][("intake", "voice_start_call", "ok")] == 2
+    assert st["tools_since"] == {("intake", "voice_start_call", "ok"): 1}
+    assert st["runs_since"] == 1 and store.activity_stats("2999-01-01")["runs_since"] == 0

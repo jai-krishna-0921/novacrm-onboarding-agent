@@ -13,6 +13,7 @@ IN_FLIGHT_STATUSES = {"AWAITING_CALL", "AWAITING_RETRY", "TIER_CONFIRMED", "PROJ
 DEAD_STATUSES = {"FAILED", "CANCELLED"}
 # Agent 3 (project tracking): latest task snapshot plus the handoff record, one row per run.
 TRACKING_FIELDS = {"tasks", "synced_at", "handoff_summary", "handed_off_at", "handoff_slack"}
+AE_FIELDS = {"name", "phone", "active"}  # editable AE directory columns (the email is the key)
 
 
 def now() -> str:
@@ -130,8 +131,12 @@ class Store(Protocol):
     def set_kv(self, key: str, value: str) -> None: ...
     def upsert_ae(self, email: str, name: str, phone: str, active: bool = True) -> None: ...
     def lookup_ae(self, email: str) -> dict | None: ...
+    def add_ae(self, email: str, name: str, phone: str, active: bool = True) -> bool: ...
+    def list_aes(self) -> list[dict]: ...
+    def update_ae(self, email: str, **fields: Any) -> dict | None: ...
     def add_migration_check(self, row: dict) -> None: ...
     def list_migration_checks(self, run_id: str) -> list[dict]: ...
+    def latest_migration_check(self) -> dict | None: ...
     def get_tracking(self, run_id: str) -> dict | None: ...
     def upsert_tracking(self, run_id: str, **fields: Any) -> None: ...
     # observability (newest first, `since` is an ISO timestamp compared against the stored ts)
@@ -143,6 +148,7 @@ class Store(Protocol):
     def llm_stats(self, since: str | None = None) -> dict: ...
     def tool_stats(self, since: str | None = None) -> list[dict]: ...
     def overview_stats(self) -> dict: ...
+    def activity_stats(self, since: str) -> dict: ...
 
 
 def _no_id(row: dict) -> dict:
@@ -348,6 +354,25 @@ class MemoryStore:
             "llm_cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in self.llm_calls), 6),
         }
 
+    def activity_stats(self, since: str) -> dict:
+        """Agent status page: newest audit row per agent, audit counts per (agent, step, status), tool-call counts
+        per (agent, tool, status) all-time and since `since`, and runs created since `since`."""
+        last: dict[str, dict] = {}
+        steps: dict[tuple, int] = {}
+        for a in self.audit_rows:
+            last[a["agent"]] = {k: a.get(k) for k in ("ts", "step", "rationale", "status")}
+            k = (a.get("agent"), a.get("step"), a.get("status"))
+            steps[k] = steps.get(k, 0) + 1
+        tools: dict[tuple, int] = {}
+        tools_since: dict[tuple, int] = {}
+        for t in self.tool_calls:
+            k = (t.get("agent"), t.get("tool"), t.get("status"))
+            tools[k] = tools.get(k, 0) + 1
+            if str(t.get("ts") or "") >= since:
+                tools_since[k] = tools_since.get(k, 0) + 1
+        return {"last": last, "steps": steps, "tools": tools, "tools_since": tools_since,
+                "runs_since": sum(str(r.get("created_at") or "") >= since for r in self.runs.values())}
+
     def get_kv(self, key: str) -> str | None:
         return self.kv.get(key)
 
@@ -356,16 +381,45 @@ class MemoryStore:
 
     def upsert_ae(self, email: str, name: str, phone: str, active: bool = True) -> None:
         e = email.strip().lower()
-        self.aes[e] = {"email": e, "name": name, "phone": phone, "active": active}
+        self.aes[e] = {"email": e, "name": name, "phone": phone, "active": active, "updated_at": now()}
 
     def lookup_ae(self, email: str) -> dict | None:
-        return self.aes.get(email.strip().lower())
+        ae = self.aes.get(email.strip().lower())
+        return dict(ae) if ae else None
+
+    def add_ae(self, email: str, name: str, phone: str, active: bool = True) -> bool:
+        """Insert only if the email is absent (never overwrites an edited row). True if inserted."""
+        if email.strip().lower() in self.aes:
+            return False
+        self.upsert_ae(email, name, phone, active)
+        return True
+
+    def list_aes(self) -> list[dict]:
+        return sorted((dict(a) for a in self.aes.values()), key=lambda a: ((a["name"] or "").lower(), a["email"]))
+
+    def update_ae(self, email: str, **fields: Any) -> dict | None:
+        if unknown := set(fields) - AE_FIELDS:
+            raise ValueError(f"unknown AE fields: {unknown}")
+        ae = self.aes.get(email.strip().lower())
+        if ae is None:
+            return None
+        ae.update(fields, updated_at=now())
+        return dict(ae)
 
     def add_migration_check(self, row: dict) -> None:
         self.migration_checks.append(row)
 
     def list_migration_checks(self, run_id: str) -> list[dict]:
         return [r for r in self.migration_checks if r["run_id"] == run_id]
+
+    def latest_migration_check(self) -> dict | None:
+        """The newest batch across all runs: {batch_id, ts, passed (all its checks), run_id}."""
+        if not self.migration_checks:
+            return None
+        last = self.migration_checks[-1]
+        batch = [r for r in self.migration_checks if r["batch_id"] == last["batch_id"]]
+        return {"batch_id": last["batch_id"], "ts": last["ts"], "passed": all(r["passed"] for r in batch),
+                "run_id": last["run_id"]}
 
     def get_tracking(self, run_id: str) -> dict | None:
         row = self.tracking.get(run_id)

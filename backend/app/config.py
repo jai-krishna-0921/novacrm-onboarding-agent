@@ -74,20 +74,14 @@ class Settings(BaseSettings):
     session_secret: str = ""     # empty: random per process (sessions reset on restart)
     trust_proxy: bool = False    # true only behind Caddy: client IP/scheme come from X-Forwarded-For/-Proto
     auth_disabled: bool = False  # test suite only; ignored when PROVIDER_MODE=real
+    # Dashboard buttons that repair / re-break the migration demo destination. Also refused unless MIG_DEST_URL's
+    # database is named mig_dest, so they can never write to a real customer database.
+    migration_demo_controls: bool = True
 
     @field_validator("retell_from_number", "demo_ae_phone")
     @classmethod
     def _e164(cls, v: str) -> str:
-        """Accept dashboard formatting ('+1 (510) 822-8650') but store strict E.164; Retell 404s otherwise."""
-        v = v.strip()
-        if not v:
-            return v
-        if not re.fullmatch(r"\+[\d\s().-]+", v):
-            raise ValueError("phone number must be E.164, e.g. +15108228650")
-        digits = re.sub(r"\D", "", v)
-        if not 8 <= len(digits) <= 15:
-            raise ValueError("phone number must have 8-15 digits")
-        return "+" + digits
+        return normalize_e164(v)
 
     @model_validator(mode="after")
     def _migration_urls(self) -> "Settings":
@@ -97,6 +91,20 @@ class Settings(BaseSettings):
         self.mig_source_url = _psycopg(self.mig_source_url or sibling("mig_source"))
         self.mig_dest_url = _psycopg(self.mig_dest_url or sibling("mig_dest"))
         return self
+
+
+def normalize_e164(v: str) -> str:
+    """Accept dashboard formatting ('+1 (510) 822-8650') but return strict E.164; Retell 404s otherwise.
+    Empty stays empty (an unset setting); raises ValueError for anything else that is not a +-prefixed number."""
+    v = v.strip()
+    if not v:
+        return v
+    if not re.fullmatch(r"\+[\d\s().-]+", v):
+        raise ValueError("phone number must be E.164, e.g. +15108228650")
+    digits = re.sub(r"\D", "", v)
+    if not 8 <= len(digits) <= 15:
+        raise ValueError("phone number must have 8-15 digits")
+    return "+" + digits
 
 
 def _psycopg(url: str) -> str:
@@ -131,3 +139,13 @@ PLACEHOLDER_PM, PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER = "Project Manager", "Cust
 def role_placeholders(pm_email: str, csm_email: str, customer_email: str) -> dict[str, str]:
     m = {PLACEHOLDER_PM: pm_email, PLACEHOLDER_CSM: csm_email, PLACEHOLDER_CUSTOMER: customer_email}
     return {k: v for k, v in m.items() if v}
+
+
+# Native Rocketlane overdue automations (Settings -> Automations; UI only, no API). Mirrors docs/ROCKETLANE_SETUP.md
+# so the dashboard can show what escalates overdue tasks even though no code runs it.
+ROCKETLANE_AUTOMATIONS = (
+    {"name": "Overdue 1 day → notify Project Manager", "trigger": "Task overdue by 1 day",
+     "notify": "Project Manager placeholder"},
+    {"name": "Overdue 4 days → escalate to Project Owner", "trigger": "Task overdue by 4 days",
+     "notify": "Project Owner"},
+)

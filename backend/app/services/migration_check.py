@@ -58,17 +58,39 @@ def _ids(ids) -> list:
     return sorted(ids, key=lambda i: (i is None, str(i)))
 
 
+REQUIRED = ("name", "email")
+
+
+def blank(v) -> bool:
+    return not str(v or "").strip()
+
+
+def find_problems(source: Contacts, dest: Contacts) -> dict[str, list]:
+    """Problem ids per kind; the single definition behind the checks, the dashboard summary and the row tags."""
+    return {
+        "duplicates": _ids(i for i, n in Counter(r["id"] for r in dest).items() if n > 1),
+        "missing_required": _ids({r["id"] for r in dest if any(blank(r.get(f)) for f in REQUIRED)}),
+        "missing_in_dest": _ids({r["id"] for r in source} - {r["id"] for r in dest}),
+    }
+
+
+def row_problems(row: dict, side: str, problems: dict[str, list]) -> list[str]:
+    """Tags for one row: dest rows get duplicate / missing_<field>; source rows get missing_in_dest."""
+    if side == "source":
+        return ["missing_in_dest"] if row["id"] in problems["missing_in_dest"] else []
+    tags = ["duplicate"] if row["id"] in problems["duplicates"] else []
+    return tags + [f"missing_{f}" for f in REQUIRED if blank(row.get(f))]
+
+
 def evaluate(source: Contacts, dest: Contacts) -> list[CheckResult]:
-    dest_ids = {r["id"] for r in dest}
-    missing = _ids({r["id"] for r in source} - dest_ids)
-    dupes = _ids(i for i, n in Counter(r["id"] for r in dest).items() if n > 1)
-    blank = _ids({r["id"] for r in dest if not (r.get("name") or "").strip() or not (r.get("email") or "").strip()})
+    p = find_problems(source, dest)
+    missing, dupes, blank_ids = p["missing_in_dest"], p["duplicates"], p["missing_required"]
     return [
         # An empty source means the migration never ran or the URL is wrong: never "verified".
         _result("record_count", len(source), len(dest), [], ok=len(source) > 0),
         _result("primary_keys", 0, len(missing), missing),
         _result("duplicates", 0, len(dupes), dupes),
-        _result("required_fields", 0, len(blank), blank),
+        _result("required_fields", 0, len(blank_ids), blank_ids),
     ]
 
 
