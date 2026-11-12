@@ -1,4 +1,4 @@
-# Video transcript (about 15 minutes)
+# Video transcript (about 16 minutes)
 
 Read it as written. **[Brackets]** are actions, not speech. Slide numbers match the deck.
 
@@ -78,6 +78,8 @@ Idempotency matters because an API can time out after it has already done the wo
 
 The guardrails are as follows. There is no project without a confirmed tier. The sender is verified before anything runs. Emails are treated as data and never as instructions, which protects against prompt injection. Duplicates are blocked. Every customer message is fact-checked, so nothing internal leaks. Everything is audited, and phone numbers are masked.
 
+The system also protects itself. Every webhook is authenticated: Retell requests are signed, and Gmail and Rocketlane send a secret token. If a Retell webhook is lost, the scheduler fetches the call result from Retell directly. If a run gets stuck halfway through a step, it is escalated instead of hanging silently. A human’s options are limited by the type of problem, so nobody can set a tier on a project that already exists.
+
 The system also has more than 900 automated tests, and I will show the model evaluations after the demo.
 
 ## 8. Data migration (40 s)
@@ -136,7 +138,19 @@ For welcome messages, both models scored 8 out of 8. A separate Sonnet judge sco
 
 Since Haiku matched Sonnet on all three tasks at about one seventh of the cost, Haiku runs the agents. The handoff summary is the one place where Sonnet did better, scoring 6 out of 6 compared with Haiku’s 5 out of 6, so Sonnet writes only the handoff.
 
-## 11. Assumptions and design (1 min)
+## 11. What testing taught me (1 min)
+
+I logged every problem I found in an issues document, and it now has more than a hundred entries, each with its fix. Four of them show how I worked.
+
+First, during a review of the deployed system, I realised that anyone could forge an email from an AE’s address and trigger a real phone call. I fixed this by trusting only Gmail’s own DMARC verdict.
+
+Second, Rocketlane can time out after it has already created a project. A simple retry would have created a duplicate, so every write now checks whether it already happened before trying again.
+
+Third, the stress tests showed that two customers with long, similar names could end up sharing one Slack channel. Each channel name now includes a short code that is unique to its run.
+
+Fourth, on a live call, the speech recogniser heard my “Growth” as “group”. The guardrail held, because the system never guessed and kept retrying. I then tuned the voice agent with Indian-English recognition, boosted the plan names, and added a yes-or-no confirmation. Afterwards, an independent review found that this new confirmation step could let a plan that only the bot had said slip through. I closed that gap, added trap cases to the evaluations, and confirmed that there were zero false confirmations.
+
+## 12. Assumptions and design (1 min)
 
 I made a few assumptions, and each one has a reason. Each email announces one deal, because that is how Sales works today. The tier comes from the phone call and never from the price, because prices in emails are unreliable. CS owns the templates, so they live in configuration and not in prompts. Overdue escalation stays in Rocketlane, so it works even if my service is down. Finally, customer data is only ever read and never written.
 
