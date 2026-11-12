@@ -18,6 +18,9 @@ ALLOWED = {
     # Raised outside the graph by the migration checker (services/migration_check.py) after the project exists.
     # The CSM gets the data fixed and re-runs the check; a passing re-run resolves it. Never a tier change.
     "migration": {"retry"},
+    # Raised by Agent 3 when a person's change in Rocketlane needs a look (phase marked Completed with open tasks,
+    # a task or phase Blocked). It clears itself once fixed in Rocketlane; nothing can resolve it by hand.
+    "tracking": set(),
 }
 
 

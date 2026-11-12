@@ -126,6 +126,15 @@ class RocketlaneClient:
                         "due_date": str(due) if due else None})
         return out
 
+    def list_phases(self, project_id: str) -> list[dict]:
+        """GET /phases?projectId= (documented). VERIFIED live 2026-11-12: each phase has its own status
+        (To do / In Progress / Completed / Blocked) that a person can set in the UI without touching its tasks."""
+        out = []
+        for ph in self._get_all("/phases", projectId=project_id):
+            out.append({"phase_id": str(ph.get("phaseId")), "name": str(ph.get("phaseName", "")),
+                        "status_label": str((ph.get("status") or {}).get("label") or "")})
+        return out
+
     def set_task_status(self, task_id: str, status_value: int) -> None:
         """PUT /tasks/{id} {status: {value}} (documented on update-task). The body carries nothing else.
         UNVERIFIED against the live API: that a status-only PUT leaves notes, dates and assignees unchanged (the

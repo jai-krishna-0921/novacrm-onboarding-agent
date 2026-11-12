@@ -7,6 +7,9 @@ Each sync reads the tasks, diffs them against the stored snapshot and applies fi
                                            -> reopen it, note why, open/refresh a "migration" escalation
   d. every Go-Live task completed          -> LLM-drafted, code-checked handoff summary on the
                                               "Handoff to support" task's private note; run handed off
+  e. a person's change in Rocketlane that needs a look (a phase marked Completed while its tasks are open,
+     a task or phase set to Blocked)    -> "tracking" escalation + one internal Slack post; it clears itself
+                                           once fixed in Rocketlane. The customer is never told.
 The LLM only drafts (d). Nothing internal (escalations, migration defects, the handoff) goes to Slack.
 Overdue nudges are a native Rocketlane automation and are not duplicated here.
 """
@@ -171,6 +174,9 @@ class Tracker:
             if _phase_done(tasks, phase) and (newly or self._unposted(run, phase)):
                 actions.append(self._announce(run, phase, tasks))
 
+        # e. flags from the phase menu / Blocked status (after a, so a phase whose tasks just got done is announced)
+        actions += self._reconcile_flags(run, tasks)
+
         self.store.upsert_tracking(run_id, tasks=tasks, synced_at=now())
         # d. handoff: state-based so a failed note write is retried on the next sync
         if (a := self._maybe_handoff(run, tasks, changed)) is not None:
@@ -288,6 +294,71 @@ class Tracker:
         self.store.upsert_escalation(key, dict(run_id=run_id, kind="migration", agent=AGENT, status="open",
                                                reason=reason))
         audit(self.store, run_id, AGENT, "escalate", rationale=reason, status="escalated")
+
+    # ---------- rule e ----------
+    def _wanted_flags(self, run: dict, tasks: list[dict]) -> dict[str, str] | None:
+        """flag id -> reason for everything that needs a look right now; None if the phases couldn't be read."""
+        try:
+            phases = self.registry.call(AGENT, "rocketlane_list_phases", {"project_id": run["rocketlane_project_id"]},
+                                        run_id=run["id"], rationale="read phase statuses set in Rocketlane",
+                                        audit_success=False).phases
+        except ToolFailed:
+            return None
+        out: dict[str, str] = {}
+        for ph in phases:
+            label = ph.status_label.strip().lower()
+            open_ = [t["name"] for t in tasks if t.get("phase") == ph.name and not t["completed"]]
+            if label in ("completed", "done") and open_:
+                out[f"phase-done:{ph.name}"] = (
+                    f"The {ph.name} phase was marked Completed in Rocketlane but {len(open_)} of its tasks are still "
+                    f"open ({', '.join(open_[:5])}). Not announced to the customer until they are done.")
+            elif label == "blocked":
+                out[f"blocked-phase:{ph.name}"] = f"The {ph.name} phase is marked Blocked in Rocketlane."
+        for t in tasks:
+            if t.get("status_label", "").strip().lower() == "blocked":
+                out[f"blocked-task:{t['task_id']}"] = (f"Task '{t['name']}' ({t.get('phase') or 'no phase'}) is "
+                                                       "marked Blocked in Rocketlane.")
+        return out
+
+    def _reconcile_flags(self, run: dict, tasks: list[dict]) -> list[str]:
+        rid = run["id"]
+        wanted = self._wanted_flags(run, tasks)
+        if wanted is None:  # phase statuses unreadable this time: keep what's open, the task rules still ran
+            return []
+        prefix = f"{rid}:tracking:"
+        # key = <prefix><flag id>:<occurrence>; compare on the flag id
+        open_now = {e["key"][len(prefix):].rsplit(":", 1)[0]: e for e in self.store.list_escalations("open")
+                    if e["run_id"] == rid and e.get("kind") == "tracking" and e["key"].startswith(prefix)}
+        actions = []
+        for flag, reason in wanted.items():
+            if flag in open_now:
+                continue
+            # A new key per occurrence: one that was cleared and comes back is a new escalation and a new post.
+            key = f"{prefix}{flag}:{uuid.uuid4().hex[:8]}"
+            self.store.upsert_escalation(key, dict(run_id=rid, kind="tracking", agent=AGENT, status="open",
+                                                   reason=reason))
+            audit(self.store, rid, AGENT, "escalate", rationale=reason, status="escalated")
+            self._post_internal(run, f":warning: *{run.get('customer_name')}*: {reason}", key)
+            actions.append(f"flagged: {reason}")
+        for base, e in open_now.items():
+            if base not in wanted:
+                self.store.upsert_escalation(e["key"], dict(status="resolved", resolved_by="rocketlane",
+                                                          resolution={"action": "cleared", "by": "rocketlane"}))
+                audit(self.store, rid, AGENT, "flag_cleared", rationale=f"fixed in Rocketlane: {e['reason']}")
+                actions.append(f"cleared: {base}")
+        return actions
+
+    def _post_internal(self, run: dict, text: str, key: str) -> None:
+        """Best effort, internal channel only (never the customer's); the escalation is the record."""
+        channel = self.settings.slack_handoff_channel
+        if not channel or channel == run.get("slack_channel_id") or self.store.find_run_by_channel(channel):
+            return
+        try:
+            self.registry.call(AGENT, "slack_post_internal", {"channel_id": channel, "text": text}, run_id=run["id"],
+                               idempotency_key=f"{key}:slack", rationale="tell the CS team (internal channel)")
+        except ToolFailed as e:
+            audit(self.store, run["id"], AGENT, "flag_slack", status="failed",
+                  rationale=f"flag is in Needs a human; internal Slack post failed: {e.reason}")
 
     # ---------- rule d ----------
     def _maybe_handoff(self, run: dict, tasks: list[dict], changed: bool) -> str | None:

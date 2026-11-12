@@ -90,6 +90,7 @@ class FakeRocketlane:
         self.projects: list[dict] = list(existing or [])
         self.task_updates: list[dict] = []  # PUT /tasks bodies, so tests can prove what was sent
         self.broken_projects: set[str] = set()  # list_tasks raises for these (per-run isolation tests)
+        self.phases_down = False  # list_phases raises (Agent 3 must keep its task rules working)
         self._ids = itertools.count(1001)
         # Rocketlane search is eventually consistent ("a couple of seconds"): a new project stays
         # invisible to the next `search_lag` find calls.
@@ -164,6 +165,14 @@ class FakeRocketlane:
                  "completed": t["status"]["label"] == "Completed", "due_date": t.get("dueDate")}
                 for t in self._project(project_id).get("tasks", [])]
 
+    def list_phases(self, project_id: str) -> list[dict]:
+        if self.phases_down:
+            raise TransientToolError("503 on list_phases")
+        p = self._project(project_id)
+        names = dict.fromkeys((t.get("phase") or {}).get("phaseName") for t in p.get("tasks", []))
+        status = p.setdefault("phase_status", {})
+        return [{"phase_id": f"ph-{n}", "name": n, "status_label": status.get(n, "To do")} for n in names if n]
+
     def set_task_status(self, task_id: str, status_value: int) -> None:
         for p in self.projects:
             for t in p.get("tasks", []):
@@ -174,7 +183,12 @@ class FakeRocketlane:
                     return
         raise PermanentToolError(f"404: task {task_id} not found")
 
-    # ---- test helper: what a person does in the Rocketlane UI ----
+    # ---- test helpers: what a person does in the Rocketlane UI ----
+    def set_phase_status(self, project_id: str, phase: str, label: str) -> None:
+        """The phase's own status menu (To do / In Progress / Completed / Blocked). Its tasks are left as they are,
+        exactly like Rocketlane (verified live 2026-11-12)."""
+        self._project(project_id).setdefault("phase_status", {})[phase] = label
+
     def mark(self, project_id: str, *name_prefixes: str, phase: str | None = None, status: dict = COMPLETED) -> None:
         tasks = self._project(project_id)["tasks"]
         hits = [t for t in tasks if (phase and (t.get("phase") or {}).get("phaseName") == phase)

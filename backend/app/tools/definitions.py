@@ -25,7 +25,7 @@ ALLOWLIST: dict[str, set[str]] = {
     "migration": {"rocketlane_find_task", "rocketlane_add_task_note"},
     # Project tracking (services/tracking.py): reads tasks, reopens an unverified "Migration verified", appends
     # private notes, posts template progress lines. No project/channel creation, no invites.
-    "tracking": {"rocketlane_list_tasks", "rocketlane_set_task_status", "rocketlane_find_task",
+    "tracking": {"rocketlane_list_tasks", "rocketlane_list_phases", "rocketlane_set_task_status", "rocketlane_find_task",
                  "rocketlane_add_task_note", "slack_post_internal"},  # customer messages go through Agent 2
 }
 
@@ -178,6 +178,16 @@ class RlListTasksOut(BaseModel):
     tasks: list[RlTask]
 
 
+class RlPhase(BaseModel):
+    phase_id: str
+    name: str
+    status_label: str = ""
+
+
+class RlListPhasesOut(BaseModel):
+    phases: list[RlPhase]
+
+
 class RlSetStatusIn(BaseModel):
     task_id: str
     status_value: int
@@ -312,6 +322,9 @@ def build_registry(store: Store, p: Providers, **kw) -> ToolRegistry:
     reg.register("rocketlane_list_tasks",
                  lambda a: RlListTasksOut(tasks=[RlTask(**t) for t in p.rocketlane.list_tasks(a.project_id)]),
                  RlListTasksIn, RlListTasksOut)
+    reg.register("rocketlane_list_phases",
+                 lambda a: RlListPhasesOut(phases=[RlPhase(**x) for x in p.rocketlane.list_phases(a.project_id)]),
+                 RlListTasksIn, RlListPhasesOut)
     # Setting a status, a topic or inviting again is harmless: those may simply be repeated.
     reg.register("rocketlane_set_task_status", rl_set_status, RlSetStatusIn, Ok, repeat_within=math.inf)
     reg.register("slack_create_channel",

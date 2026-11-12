@@ -129,6 +129,8 @@ Source: https://developer.rocketlane.com/reference/get-all-projects
   - `sortBy` is one of `taskName, startDate, dueDate, startDateActual, dueDateActual`.
   - For overdue tasks, use `dueDate.lt=<today>` together with a status filter.
 - Response fields include `taskId, taskName, startDate, dueDate, status{value,label}, progress, atRisk, phase, assignees, followers, dependencies, parent, priority, project, fields`.
+- **VERIFIED live 2026-11-12:** `atRisk`, `progress`, `taskDescription` and `effortInMinutes` are rejected in `includeFields` ("Invalid field") and are absent from `GET /tasks/{id}`, so the At risk flag is effectively write-only. Valid `includeFields` include `phase`, `assignees`, `followers`, `type`, `priority`, `taskPrivateNote`.
+- **VERIFIED live 2026-11-12:** phases have their own `status{value,label}` (To do / In Progress / Completed / Blocked) on `GET /phases?projectId=`. Setting a phase to Completed in the UI does **not** complete its tasks.
 - Status is an integer `value` paired with a `label` (example `{"value":2,"label":"In progress"}`). **UNVERIFIED:** no endpoint is documented that lists the available status values. Read them from existing tasks, or check whether `GET /fields?objectType.eq=TASK` exposes them.
 
 **Comments: no endpoint.** There is no comment, conversation or message endpoint for tasks or projects in either 1.0 or 1.3. The in-app task chat exists, since the automations have a "A new message on the task" trigger and a "Send message" action, but the public API doesn't expose it. Fallbacks:

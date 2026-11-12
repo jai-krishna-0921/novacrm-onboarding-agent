@@ -104,3 +104,20 @@ describe("stepper state mapping", () => {
     expect(trackingPct(null)).toBe(0);
   });
 });
+
+describe("tracking flags from Rocketlane", () => {
+  it("shows a project flag as a warning on a running onboarding, not as a decision", () => {
+    const flag = {
+      key: "r1:tracking:phase-done:Kickoff:ab12",
+      run_id: "r1",
+      kind: "tracking",
+      status: "open",
+      reason: "The Kickoff phase was marked Completed in Rocketlane but 2 of its tasks are still open.",
+    } as Escalation;
+    const v = deriveRun(run({ status: "COMPLETED" }), { audit: [], pending: null }, [flag]);
+    expect(v.tone).toBe("warn");
+    expect(v.title).toBe("Onboarding running. Project needs a look");
+    expect(v.sub).toContain("Kickoff");
+    expect(v.steps[6].state).toBe("warn");
+  });
+});

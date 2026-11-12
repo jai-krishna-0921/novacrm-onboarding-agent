@@ -59,8 +59,9 @@ def mig_escalations(h, rid, status=None):
 
 
 def writes(h, rid):
-    """Every tool call except the read that every sync makes."""
-    return [c for c in h.store.tool_calls if c["run_id"] == rid and c["tool"] != "rocketlane_list_tasks"]
+    """Every tool call except the reads that every sync makes."""
+    return [c for c in h.store.tool_calls if c["run_id"] == rid
+            and c["tool"] not in ("rocketlane_list_tasks", "rocketlane_list_phases")]
 
 
 def finish_all_but_go_live(h, t, rid):

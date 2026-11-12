@@ -143,3 +143,6 @@ post per phase, one handoff note, dashboard aggregates equal a brute-force recou
 | 83 | `make e2e-tracking` rewrote MIG_DEST_URL without the demo-database guard | Medium | Fixed: refuses unless the destination is the demo database. |
 | 84 | A customer column literally named `problems` is shadowed in `/migration/data` rows | Low | Known; demo tables don't have one. |
 | 85 | Chaos stress test flaky (~1 in 8 at 30% faults): "orphan" channel/project | Low (test) | Not a product defect: create response and the follow-up lookup were both lost, and the run escalated as "outcome unknown, verify before retrying" after the simulated human's 3 retries. The invariant now accepts exactly that case; 25/25 runs pass. |
+| 86 | A phase marked Completed in the Rocketlane UI (tasks left open) or a Blocked task/phase went unnoticed by Agent 3 | Medium | Fixed: rule e reads phase statuses; flags to Needs a human + internal Slack, clears itself when fixed in Rocketlane; customer never told. |
+| 87 | Comments and the At risk flag are invisible to Agent 3 | Low | Known API limit: no comment endpoint; `atRisk` is write-only (verified live). Blocked status is the readable signal. |
+| 88 | Validation rationale showed a Python list (`['customer_email: missing']`) in the Activity log | Low | Fixed: issues joined as text. |

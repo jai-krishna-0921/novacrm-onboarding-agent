@@ -31,6 +31,11 @@ export const KIND: Record<string, { label: string; explain: string }> = {
     label: "Migration check failed",
     explain: "The data migration check found problems in the destination data.",
   },
+  tracking: {
+    label: "Project needs a look",
+    explain:
+      "A change in Rocketlane needs attention: a phase marked done with open tasks, or something marked Blocked. It clears by itself once fixed in Rocketlane.",
+  },
 };
 export const kindLabel = (k: string | null | undefined) => KIND[k ?? ""]?.label ?? "Needs review";
 
@@ -181,8 +186,9 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
   const tr = d?.tracking ?? null;
   const status = String(run.status ?? "").toUpperCase();
   const escs = openEscs.filter((e) => e.run_id === run.id && (e.status ?? "open") === "open");
-  const esc = escs.find((e) => e.kind !== "migration") ?? null;
+  const esc = escs.find((e) => e.kind !== "migration" && e.kind !== "tracking") ?? null;
   const migrationEsc = escs.find((e) => e.kind === "migration") ?? null;
+  const trackingEsc = escs.find((e) => e.kind === "tracking") ?? null;
   const decisions = audit.filter((a) => a.step === "decide_tier");
   const confirmed = decisions.find((a) => a.status === "confirmed");
   const connected = decisions.filter((a) => a.status !== "no_answer");
@@ -319,6 +325,11 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
       title = "Onboarding running. Migration needs review";
       sub = migrationEsc.reason || "";
       Object.assign(steps[6], { state: "warn", sub: "Migration check failed" });
+    } else if (trackingEsc) {
+      tone = "warn";
+      title = "Onboarding running. Project needs a look";
+      sub = trackingEsc.reason || "";
+      Object.assign(steps[6], { state: "warn", sub: "Needs a look in Rocketlane" });
     } else if (tr) {
       tone = "ok";
       title = tr.current_phase ? `In onboarding: ${tr.current_phase} phase` : "In onboarding";
@@ -337,7 +348,7 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
   steps.forEach((s, i) => {
     s.reached = i > 0 && steps[i - 1].state === "done";
   });
-  const group: Group = esc || migrationEsc ? "attn" : statusInfo(status).group;
+  const group: Group = esc || migrationEsc || trackingEsc ? "attn" : statusInfo(status).group;
   return {
     steps,
     current: cur,

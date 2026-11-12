@@ -62,7 +62,11 @@ export function DecisionPanels({
             <div className="min-w-0">
               <KindChip kind={e.kind} />
               <h2 className="mt-2 text-[16px] font-semibold text-ink">
-                {e.kind === "migration" ? "Migration data needs a look" : "Needs your decision"}
+                {e.kind === "migration"
+                  ? "Migration data needs a look"
+                  : e.kind === "tracking"
+                    ? "Project needs a look in Rocketlane"
+                    : "Needs your decision"}
               </h2>
               <p className="mt-1.5 text-sm break-words whitespace-pre-wrap text-ink-2">
                 {plainError(e.reason)}
@@ -75,6 +79,12 @@ export function DecisionPanels({
             <div className="min-w-0">
               {e.kind === "migration" ? (
                 <MigrationActions run={run} />
+              ) : e.kind === "tracking" ? (
+                <p className="text-sm text-ink-2">
+                  Nothing to decide here. Fix it in Rocketlane: finish the open tasks, reopen the phase, or
+                  clear the Blocked status. The agent checks every minute and closes this item once it is
+                  fixed.
+                </p>
               ) : (
                 <ResolveForm run={run} kind={e.kind || pending?.kind || "system"} pending={pending} />
               )}
