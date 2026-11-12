@@ -300,11 +300,14 @@ def test_exception_mid_batch_keeps_cursor_and_later_emails_are_processed_next_sy
     broken["on"] = False
     push(client)
     assert h.store.get_kv("gmail_history_id") == "200"
-    assert h.store.find_run_by_message("gm-2")["status"] == "AWAITING_CALL"
+    # gm-2 is the same Acme deal as gm-1 (same opportunity link, same fake extraction), so since review 5 it is
+    # escalated as an in-flight duplicate before dialling. What this test needs: gm-2 got its run on the next sync.
+    assert h.store.find_run_by_message("gm-2")["status"] == "ESCALATED"
     [gm1] = [r for r in h.store.list_runs() if r["gmail_message_id"] == "gm-1"]
     assert any(a["step"] == "dedupe" and a["status"] == "ignored" for a in h.store.list_audit(gm1["id"])), \
         "re-listed gm-1 must be deduped by message id, not silently skipped"
-    assert len(h.world.voice.calls) == 2, "one call per run; the re-listed gm-1 must not place a second call"
+    # gm-1's one call only: the re-listed gm-1 is deduped and gm-2 (same deal, in-flight duplicate) never dials.
+    assert len(h.world.voice.calls) == 1, "the re-listed gm-1 (or its duplicate gm-2) placed a second call"
 
 
 # ---------------------------------------------------------------- 5. Eval runner thresholds
@@ -336,8 +339,6 @@ def test_transcript_suite_fails_when_the_model_never_confirms_anything(settings,
 
 # ---------------------------------------------------------------- 6. Store parity (MemoryStore vs PgStore)
 
-PG_ADMIN = "postgresql+psycopg://postgres:postgres@localhost:5432/postgres"
-PG_TEST = "postgresql+psycopg://postgres:postgres@localhost:5432/app_test_review2"
 
 
 @pytest.fixture(params=["memory", "pg"])
@@ -345,20 +346,7 @@ def store(request):
     if request.param == "memory":
         yield MemoryStore()
         return
-    request.getfixturevalue("socket_enabled")
-    sqlalchemy = pytest.importorskip("sqlalchemy")
-    try:
-        admin = sqlalchemy.create_engine(PG_ADMIN, isolation_level="AUTOCOMMIT")
-        with admin.connect() as c:
-            c.exec_driver_sql("DROP DATABASE IF EXISTS app_test_review2 WITH (FORCE)")
-            c.exec_driver_sql("CREATE DATABASE app_test_review2")
-    except Exception as e:  # noqa: BLE001
-        pytest.skip(f"Postgres not reachable: {e}")
-    from app.db.store import PgStore
-    s = PgStore(PG_TEST)
-    s.create_all()
-    yield s
-    s.engine.dispose()
+    yield request.getfixturevalue("pg_store")  # conftest: shared test database, emptied per test
 
 
 def test_idempotency_first_write_wins(store):

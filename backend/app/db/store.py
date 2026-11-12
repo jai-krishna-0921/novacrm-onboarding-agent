@@ -28,7 +28,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.services.store import (
     CALL_TOOL,
     CREATE_PROJECT_TOOL,
+    DEAD_STATUSES,
     IN_FLIGHT,
+    IN_FLIGHT_STATUSES,
     LATENCY_EDGES_MS,
     LLM_ROW_FIELDS,
     TOOL_ROW_FIELDS,
@@ -50,9 +52,10 @@ runs = Table(
     "onboarding_runs", metadata,
     Column("id", String, primary_key=True),
     Column("seq", BigInteger, run_seq, server_default=run_seq.next_value(), unique=True, nullable=False),
-    Column("status", String), Column("gmail_message_id", String, unique=True), Column("opportunity_id", String),
+    Column("status", String, index=True), Column("gmail_message_id", String, unique=True),
+    Column("opportunity_id", String, index=True),
     Column("customer_key", String, index=True), Column("customer_name", String), Column("plan_tier", String),
-    Column("rocketlane_project_id", String), Column("slack_channel_id", String), Column("error", Text),
+    Column("rocketlane_project_id", String), Column("slack_channel_id", String, index=True), Column("error", Text),
     Column("created_at", String), Column("updated_at", String),
 )
 audit_log = Table(
@@ -92,6 +95,7 @@ migration_checks = Table(
 project_tracking = Table(
     "project_tracking", metadata, Column("run_id", String, primary_key=True), Column("tasks", J),
     Column("synced_at", String), Column("handoff_summary", Text), Column("handed_off_at", String),
+    Column("handoff_slack", String),
 )
 
 RUN_FIELDS = {c.name for c in runs.columns} - {"id", "seq", "created_at", "updated_at"}
@@ -320,9 +324,9 @@ class PgStore:
         match = runs.c.customer_key == customer_key
         if opportunity_id:
             match = match | (runs.c.opportunity_id == opportunity_id)
-        live = runs.c.status.is_(None) | runs.c.status.not_in(["FAILED", "CANCELLED"])
-        q = select(runs).where(match, runs.c.id != exclude_run_id, runs.c.rocketlane_project_id.is_not(None),
-                               live).limit(1)
+        live = runs.c.status.is_(None) | runs.c.status.not_in(sorted(DEAD_STATUSES))
+        busy = runs.c.rocketlane_project_id.is_not(None) | runs.c.status.in_(sorted(IN_FLIGHT_STATUSES))
+        q = select(runs).where(match, runs.c.id != exclude_run_id, busy, live).limit(1)
         with self.engine.connect() as c:
             r = c.execute(q).first()
         return dict(r._mapping) if r else None
@@ -330,6 +334,24 @@ class PgStore:
     def list_runs(self, limit: int = 100) -> list[dict]:
         with self.engine.connect() as c:
             return _rows(c.execute(select(runs).order_by(runs.c.seq.desc()).limit(limit)))
+
+    def list_runs_by_status(self, statuses: set[str]) -> list[dict]:
+        with self.engine.connect() as c:
+            return _rows(c.execute(select(runs).where(runs.c.status.in_(sorted(statuses))).order_by(runs.c.seq)))
+
+    def list_trackable_runs(self, exclude_statuses: set[str]) -> list[dict]:
+        t = project_tracking.c
+        live = runs.c.status.is_(None) | runs.c.status.not_in(sorted(exclude_statuses))
+        q = (select(runs).outerjoin(project_tracking, t.run_id == runs.c.id)
+             .where(runs.c.rocketlane_project_id.is_not(None), live,
+                    t.handed_off_at.is_(None) | (t.handoff_slack == "pending")).order_by(runs.c.seq))
+        with self.engine.connect() as c:
+            return _rows(c.execute(q))
+
+    def find_run_by_channel(self, channel_id: str) -> dict | None:
+        with self.engine.connect() as c:
+            r = c.execute(select(runs).where(runs.c.slack_channel_id == channel_id).limit(1)).first()
+        return dict(r._mapping) if r else None
 
     # escalations
     def upsert_escalation(self, key: str, row: dict) -> None:

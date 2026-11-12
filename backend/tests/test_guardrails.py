@@ -268,3 +268,42 @@ def test_unusable_phone_settings_are_rejected(raw):
     from app.config import Settings
     with pytest.raises(ValidationError):
         Settings(_env_file=None, retell_from_number=raw)
+
+
+def test_channel_name_with_run_id_is_unique_per_run_even_when_truncated():
+    long = "Northwind Traders International Logistics and Supply Chain Holdings"
+    a = channel_name(f"{long} Europe", Tier.ENTERPRISE, "run-a")
+    b = channel_name(f"{long} Asia", Tier.ENTERPRISE, "run-b")
+    assert a != b and len(a) <= 80 and len(b) <= 80
+    assert a == channel_name(f"{long} Europe", Tier.ENTERPRISE, "run-a")  # stable across retries
+    assert channel_name("トヨタ", Tier.GROWTH, "r1") != channel_name("ソニー", Tier.GROWTH, "r2")
+
+
+def test_slack_create_reconcile_refuses_a_name_that_is_not_run_unique():
+    """Guardrail: after an ambiguous create, a channel is adopted by name only if the name carries the run hash."""
+    from app.providers.fake import FakeWorld
+    from app.services.store import MemoryStore
+    from app.tools.definitions import build_registry
+    from app.tools.registry import AmbiguousToolError, ToolFailed
+
+    world = FakeWorld()
+    world.slack.create_channel("onboarding-acme-enterprise")  # someone else's channel, same base name
+
+    def timeout(name):
+        raise AmbiguousToolError("read timeout")
+
+    world.slack.create_channel = timeout
+    reg = build_registry(MemoryStore(), world, sleep=lambda s: None)
+    with pytest.raises(ToolFailed):
+        reg.call("comms", "slack_create_channel", {"name": "onboarding-acme-enterprise"}, run_id="r1")
+
+
+@pytest.mark.parametrize("a,b", [("トヨタ自動車", "ソニーグループ"), ("Москва Ltd", "Казань Ltd"), ("!!!", "???")])
+def test_customer_key_keeps_non_latin_names_apart_and_is_never_empty(a, b):
+    from app.services.keys import customer_key
+    assert customer_key(a) and customer_key(b) and customer_key(a) != customer_key(b)
+
+
+def test_customer_key_still_folds_width_case_and_legal_suffixes():
+    from app.services.keys import customer_key
+    assert customer_key("ＡＣＭＥ Corp.") == customer_key("acme") == customer_key(" Acme-Corporation ") == "acme"

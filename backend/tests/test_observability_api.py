@@ -83,11 +83,17 @@ def test_tool_calls_paginate_and_filter(api):
             "idempotency_key"} <= set(row)
 
 
-@pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 201}, {"offset": -1}, {"since": "yesterday"}])
+@pytest.mark.parametrize("params", [{"limit": 0}, {"limit": 201}, {"offset": -1}, {"since": "yesterday"},
+                                    {"offset": 10**9 + 1}, {"offset": 2**64}])
 def test_paging_and_since_are_validated(api, params):
     c, _, _ = api
     for path in ("/tool-calls", "/llm-calls"):
         assert c.get(path, params=params).status_code == 422, (path, params)
+
+
+def test_huge_tool_call_id_is_a_client_error(api):
+    c, _, _ = api
+    assert c.get(f"/tool-calls/{2**63}").status_code == 422  # past BIGINT: Postgres would raise (500)
 
 
 def test_llm_calls_paginate_filter_and_carry_run_customer(api):

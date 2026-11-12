@@ -6,12 +6,13 @@ Assertions are on the fake providers' call logs, run status, pending interrupt a
 
 import contextlib
 import time
+import zlib
 
 import pytest
 from fastapi.testclient import TestClient
 from test_api import FakeInbox, analyzed, push, retell_post
 from test_review2_defects import FlakyLLM
-from test_workflow import EMAIL, GOOD, NO_ANSWER
+from test_workflow import EMAIL, GOOD, NO_ANSWER, OPP_URL
 
 from app.container import Container
 from app.llm.schemas import DealFields
@@ -49,7 +50,12 @@ def env(settings, voice=None, llm=None, **kw):
 
 def start_waiting_on_call(h, message_id, customer):
     """Start a run without the harness auto-answering: it stays AWAITING_CALL on its first call."""
-    email = EMAIL.model_copy(update={"message_id": message_id, "thread_id": f"th-{message_id}"}).model_dump()
+    # Its own opportunity: since review 5 a second in-flight run for the SAME deal is escalated as a duplicate
+    # before dialling, so it would never reach AWAITING_CALL.
+    opp = f"006Hs0000{zlib.crc32(message_id.encode()) % 10**6:06d}IAV"
+    email = EMAIL.model_copy(update={"message_id": message_id, "thread_id": f"th-{message_id}",
+                                     "body": EMAIL.body.replace(OPP_URL, OPP_URL.replace("006Hs00001AbCdEIAV", opp))
+                                     }).model_dump()
     h.llm.fields = DealFields(**{**GOOD, "customer_name": customer})
     rid, _ = h.runner.start(email)
     assert h.status(rid) == "AWAITING_CALL"

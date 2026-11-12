@@ -8,8 +8,11 @@ from typing import Any, Protocol
 
 RUN_FIELDS = {"status", "gmail_message_id", "opportunity_id", "customer_key", "customer_name", "plan_tier",
               "rocketlane_project_id", "slack_channel_id", "error"}
+# Past validation, no project yet, still progressing: a second run for the same deal must not phone the AE again.
+IN_FLIGHT_STATUSES = {"AWAITING_CALL", "AWAITING_RETRY", "TIER_CONFIRMED", "PROJECT_CREATED"}
+DEAD_STATUSES = {"FAILED", "CANCELLED"}
 # Agent 3 (project tracking): latest task snapshot plus the handoff record, one row per run.
-TRACKING_FIELDS = {"tasks", "synced_at", "handoff_summary", "handed_off_at"}
+TRACKING_FIELDS = {"tasks", "synced_at", "handoff_summary", "handed_off_at", "handoff_slack"}
 
 
 def now() -> str:
@@ -114,6 +117,9 @@ class Store(Protocol):
     def find_run_by_message(self, gmail_message_id: str) -> dict | None: ...
     def find_active_run(self, *, opportunity_id: str | None, customer_key: str,
                         exclude_run_id: str) -> dict | None: ...
+    def list_runs_by_status(self, statuses: set[str]) -> list[dict]: ...
+    def list_trackable_runs(self, exclude_statuses: set[str]) -> list[dict]: ...
+    def find_run_by_channel(self, channel_id: str) -> dict | None: ...
     def upsert_escalation(self, key: str, row: dict) -> None: ...
     def list_escalations(self, status: str | None = None) -> list[dict]: ...
     def list_runs(self, limit: int = 100) -> list[dict]: ...
@@ -196,7 +202,8 @@ class MemoryStore:
             raise ValueError(f"unknown run fields: {unknown}")
         if run_id not in self.runs:
             self._seq += 1
-            self.runs[run_id] = {"id": run_id, "created_at": now(), "seq": self._seq}
+            # Every column present (None when unset), same row shape as PgStore.
+            self.runs[run_id] = {"id": run_id, "created_at": now(), "seq": self._seq, **dict.fromkeys(RUN_FIELDS)}
         self.runs[run_id].update(fields, updated_at=now())
 
     def get_run(self, run_id: str) -> dict | None:
@@ -208,14 +215,28 @@ class MemoryStore:
     def find_active_run(self, *, opportunity_id: str | None, customer_key: str,
                         exclude_run_id: str) -> dict | None:
         for r in self.runs.values():
-            if r["id"] == exclude_run_id or r.get("status") in {"FAILED", "CANCELLED"}:
+            if r["id"] == exclude_run_id or r.get("status") in DEAD_STATUSES:
                 continue
-            if not r.get("rocketlane_project_id"):
+            if not r.get("rocketlane_project_id") and r.get("status") not in IN_FLIGHT_STATUSES:
                 continue
             if (opportunity_id and r.get("opportunity_id") == opportunity_id) or \
                     r.get("customer_key") == customer_key:
                 return r
         return None
+
+    def list_runs_by_status(self, statuses: set[str]) -> list[dict]:
+        return sorted((r for r in self.runs.values() if r.get("status") in statuses), key=lambda r: r["seq"])
+
+    def list_trackable_runs(self, exclude_statuses: set[str]) -> list[dict]:
+        """Runs with a project, not in `exclude_statuses`, not yet handed off or with the internal handoff post
+        still pending (oldest first)."""
+        return sorted((r for r in self.runs.values() if r.get("rocketlane_project_id")
+                       and r.get("status") not in exclude_statuses
+                       and (not (t := self.tracking.get(r["id"]) or {}).get("handed_off_at")
+                            or t.get("handoff_slack") == "pending")), key=lambda r: r["seq"])
+
+    def find_run_by_channel(self, channel_id: str) -> dict | None:
+        return next((r for r in self.runs.values() if r.get("slack_channel_id") == channel_id), None)
 
     def upsert_escalation(self, key: str, row: dict) -> None:
         self.escalations.setdefault(key, {"key": key, "created_at": now()}).update(row)

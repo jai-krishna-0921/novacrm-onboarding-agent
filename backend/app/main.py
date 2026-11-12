@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Path as FastPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -59,7 +60,8 @@ def _bucket_labels() -> list[str]:
 
 
 LIMIT = Query(25, ge=1, le=200)
-OFFSET = Query(0, ge=0)
+OFFSET = Query(0, ge=0, le=10**9)  # bounded: a value past BIGINT would be a Postgres error (500)
+ROW_ID = FastPath(ge=1, le=2**63 - 1)
 
 
 class Resolution(BaseModel):
@@ -81,11 +83,25 @@ def create_app(c: Container | None = None) -> FastAPI:
         return Tracker(k.settings, k.store, k.registry, k.llm, k.migration_contacts)
 
     # ---------- inbox sync (shared by Pub/Sub push and the polling fallback) ----------
+    sync_queue = threading.Lock()
+    sync_queued = [False]  # a push-triggered sync is waiting for the lock: further pushes need no sync of their own
+
+    def push_sync() -> None:
+        """Pushes arriving while a sync is already queued are covered by it (it reads the cursor once it runs), so
+        a burst of pushes holds at most one worker thread waiting on the lock instead of one each."""
+        with sync_queue:
+            if sync_queued[0]:
+                return
+            sync_queued[0] = True
+        sync_inbox()
+
     def sync_inbox() -> None:
         k = container()
-        if k.inbox is None:
-            return
         with lock:
+            with sync_queue:
+                sync_queued[0] = False  # from here on, a new push needs a new sync
+            if k.inbox is None:
+                return
             cursor = k.store.get_kv(CURSOR)
 
             def relevant(e) -> bool:
@@ -118,7 +134,8 @@ def create_app(c: Container | None = None) -> FastAPI:
         k, now = container(), now if now is not None else time.time()
         stale: list[tuple[str, str, float]] = []
         with lock:
-            for run in k.store.list_runs(500):
+            # By state, not the newest N: an old waiting/stuck run must never fall out of the scheduler's view.
+            for run in k.store.list_runs_by_status(set(AWAITING) | MID_NODE):
                 try:
                     status = run.get("status")
                     age = now - datetime.fromisoformat(run["updated_at"]).timestamp()
@@ -223,10 +240,12 @@ def create_app(c: Container | None = None) -> FastAPI:
 
     # ---------- webhooks ----------
     @app.post("/webhooks/gmail")
-    def gmail_push(token: str, bg: BackgroundTasks):
+    async def gmail_push(token: str, bg: BackgroundTasks):
+        # async: the ack needs no worker thread, so a backlog of lock-blocked background tasks (call webhooks)
+        # can't delay it past Pub/Sub's ack deadline. The sync itself is coalesced (see push_sync).
         if token != container().settings.gmail_push_token or not token:
             raise HTTPException(401, "bad push token")
-        bg.add_task(sync_inbox)
+        bg.add_task(push_sync)
         return {"ok": True}
 
     @app.post("/webhooks/voice", status_code=204)
@@ -276,7 +295,7 @@ def create_app(c: Container | None = None) -> FastAPI:
 
     # ---------- dashboard API ----------
     @app.get("/healthz")
-    def healthz():
+    async def healthz():  # async: answered on the event loop, never queued behind busy worker threads
         return {"ok": True, "mode": container().settings.provider_mode}
 
     @app.get("/runs")
@@ -396,7 +415,7 @@ def create_app(c: Container | None = None) -> FastAPI:
         return {"total": page["total"], "limit": limit, "offset": offset, "rows": page["rows"]}
 
     @app.get("/tool-calls/{call_id}")
-    def tool_call_detail(call_id: int):
+    def tool_call_detail(call_id: int = ROW_ID):
         row = container().store.get_tool_call(call_id)
         if not row:
             raise HTTPException(404, "tool call not found")

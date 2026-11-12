@@ -50,8 +50,10 @@ class Auth:
         self.settings = settings
         self._random_secret = secrets.token_bytes(32)
         self._failures: dict[str, deque[float]] = defaultdict(deque)
+        # Logged-out session ids -> their expiry (pruned once expired). In memory: one app process.
+        self._revoked: dict[str, int] = {}
 
-    # ---------- session token: base64url("user|expiry") + "." + HMAC ----------
+    # ---------- session token: base64url("user|expiry|session id") + "." + HMAC ----------
     def _key(self) -> bytes:
         s = self.settings()
         secret = s.session_secret.encode() if s.session_secret else self._random_secret
@@ -60,21 +62,35 @@ class Auth:
 
     def sign(self, user: str, now: float | None = None) -> str:
         exp = int((now if now is not None else time.time()) + SESSION_SECONDS)
-        body = base64.urlsafe_b64encode(f"{user}|{exp}".encode()).decode().rstrip("=")
+        body = base64.urlsafe_b64encode(f"{user}|{exp}|{secrets.token_hex(16)}".encode()).decode().rstrip("=")
         return f"{body}.{hmac.new(self._key(), body.encode(), hashlib.sha256).hexdigest()}"
 
-    def verify(self, token: str | None, now: float | None = None) -> str | None:
+    def _session(self, token: str | None, now: float | None = None) -> tuple[str, int, str] | None:
+        """(user, expiry, session id) of a valid, unexpired, not revoked token, else None."""
         if not token or token.count(".") != 1:
             return None
         body, sig = token.split(".")
         if not hmac.compare_digest(sig, hmac.new(self._key(), body.encode(), hashlib.sha256).hexdigest()):
             return None
         try:
-            user, exp = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode().rsplit("|", 1)
+            user, exp, sid = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode().rsplit("|", 2)
             expired = int(exp) <= (now if now is not None else time.time())
         except ValueError:
             return None
-        return None if expired or user != self.settings().admin_username else user
+        if expired or user != self.settings().admin_username or sid in self._revoked:
+            return None
+        return user, int(exp), sid
+
+    def verify(self, token: str | None, now: float | None = None) -> str | None:
+        session = self._session(token, now)
+        return session[0] if session else None
+
+    def revoke(self, token: str | None) -> None:
+        """Server-side logout: the token (and any copy of it) is refused from now on, until it would expire."""
+        t = time.time()
+        self._revoked = {sid: exp for sid, exp in self._revoked.items() if exp > t}
+        if session := self._session(token):
+            self._revoked[session[2]] = session[1]
 
     def check_credentials(self, username: str, password: str) -> bool:
         s = self.settings()
@@ -169,6 +185,7 @@ class Auth:
 
         @r.post("/auth/logout")
         def do_logout(request: Request, response: Response):
+            self.revoke(request.cookies.get(COOKIE))
             response.delete_cookie(COOKIE, path="/", httponly=True, secure=self.is_https(request), samesite="strict")
             return {"ok": True}
 

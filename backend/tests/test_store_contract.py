@@ -4,29 +4,13 @@ import pytest
 
 from app.services.store import MemoryStore
 
-PG_ADMIN = "postgresql+psycopg://postgres:postgres@localhost:5432/postgres"
-PG_TEST = "postgresql+psycopg://postgres:postgres@localhost:5432/app_test"
-
 
 @pytest.fixture(params=["memory", "pg"])
 def store(request):
     if request.param == "memory":
         yield MemoryStore()
         return
-    request.getfixturevalue("socket_enabled")  # pytest-socket: this DB test may use localhost
-    sqlalchemy = pytest.importorskip("sqlalchemy")
-    try:
-        admin = sqlalchemy.create_engine(PG_ADMIN, isolation_level="AUTOCOMMIT")
-        with admin.connect() as c:
-            c.exec_driver_sql("DROP DATABASE IF EXISTS app_test WITH (FORCE)")
-            c.exec_driver_sql("CREATE DATABASE app_test")
-    except Exception as e:  # noqa: BLE001
-        pytest.skip(f"Postgres not reachable: {e}")
-    from app.db.store import PgStore
-    s = PgStore(PG_TEST)
-    s.create_all()
-    yield s
-    s.engine.dispose()
+    yield request.getfixturevalue("pg_store")  # conftest: shared test database, emptied per test
 
 
 def test_idempotency_roundtrip(store):
@@ -61,7 +45,7 @@ def test_runs_upsert_and_lookup(store):
     assert store.find_run_by_message("nope") is None
 
 
-def test_find_active_run_needs_a_project_and_skips_failed_and_self(store):
+def test_find_active_run_needs_a_project_or_an_in_flight_call_and_skips_failed_and_self(store):
     store.upsert_run("a", status="PROJECT_CREATED", opportunity_id="006A", customer_key="globex",
                      rocketlane_project_id="7")
     store.upsert_run("b", status="FAILED", opportunity_id="006B", customer_key="initech", rocketlane_project_id="8")
@@ -70,7 +54,27 @@ def test_find_active_run_needs_a_project_and_skips_failed_and_self(store):
     assert store.find_active_run(opportunity_id=None, customer_key="globex", exclude_run_id="z")["id"] == "a"
     assert store.find_active_run(opportunity_id="006A", customer_key="globex", exclude_run_id="a") is None
     assert store.find_active_run(opportunity_id="006B", customer_key="initech", exclude_run_id="z") is None
-    assert store.find_active_run(opportunity_id="006C", customer_key="umbrella", exclude_run_id="z") is None
+    # In flight (on the phone, no project yet) is active too: a re-sent deal email must not phone the AE again.
+    assert store.find_active_run(opportunity_id="006C", customer_key="x", exclude_run_id="z")["id"] == "c"
+    store.upsert_run("d", status="NOT_A_DEAL", opportunity_id="006D", customer_key="hooli")
+    store.upsert_run("e", status="ESCALATED", opportunity_id="006E", customer_key="pied")  # no project, not calling
+    assert store.find_active_run(opportunity_id="006D", customer_key="hooli", exclude_run_id="z") is None
+    assert store.find_active_run(opportunity_id="006E", customer_key="pied", exclude_run_id="z") is None
+
+
+def test_state_queries_see_every_matching_run_however_old(store):
+    store.upsert_run("old-wait", status="AWAITING_RETRY")
+    store.upsert_run("old-proj", status="COMPLETED", rocketlane_project_id="1", slack_channel_id="C1")
+    store.upsert_run("handed", status="HANDED_OFF", rocketlane_project_id="2")
+    store.upsert_tracking("handed", handed_off_at="2026-11-12T00:00:00")
+    store.upsert_run("dead", status="CANCELLED", rocketlane_project_id="3")
+    store.upsert_run("nostatus", rocketlane_project_id="4")
+    for i in range(30):
+        store.upsert_run(f"f{i}", status="NOT_A_DEAL")
+    assert [r["id"] for r in store.list_runs_by_status({"AWAITING_RETRY", "RECEIVED"})] == ["old-wait"]
+    assert [r["id"] for r in store.list_trackable_runs({"CANCELLED", "FAILED"})] == ["old-proj", "nostatus"]
+    assert store.find_run_by_channel("C1")["id"] == "old-proj" and store.find_run_by_channel("C9") is None
+    assert store.get_run("f0")["slack_channel_id"] is None  # every column present, same shape in both stores
 
 
 def test_audit_tool_and_llm_rows_are_kept_in_order(store):

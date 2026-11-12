@@ -6,9 +6,11 @@ never on internal implementation details.
 
 import pytest
 
+from app.guardrails.output import run_suffix
 from app.llm.schemas import DealFields, TranscriptReading
 from app.sim import FakeLLM, Harness, InboundEmail
 from app.tools.definitions import ALLOWLIST
+from app.tools.registry import PermanentToolError
 
 GOOD = dict(customer_name="Acme Corp", customer_contact_name="Dana Lee",
             customer_email="dana@acme.example", ae_name="Jai Krishna",
@@ -54,7 +56,8 @@ def test_happy_path_enterprise_end_to_end(settings):
     assert project["projectName"] == "Acme Corp Onboarding (Enterprise, 30-day)"
 
     [channel] = h.world.slack.channels.values()
-    assert channel["name"] == "onboarding-acme-corp-enterprise"
+    # run-unique suffix: two customers can never share a channel name (and the timeout reconcile can only adopt ours)
+    assert channel["name"] == f"onboarding-acme-corp-enterprise-{run_suffix(rid)}"
     assert "Enterprise" in channel["topic"] and "30-day" in channel["topic"] and "dedicated" in channel["topic"]
     assert channel["shared_invites"] == ["dana@acme.example"]
     [welcome] = channel["messages"]
@@ -263,6 +266,20 @@ def test_bad_llm_welcome_falls_back_to_static_template(settings):
     msg = channel["messages"][0]
     assert "$" not in msg and "30-day" in msg and "Acme Corp" in msg
     assert llm.calls["draft_welcome"] == 2  # one regeneration, then static fallback
+
+
+def test_channel_id_is_recorded_on_the_run_even_when_a_later_slack_step_escalates(settings):
+    h = Harness(settings, llm=FakeLLM(fields=DealFields(**GOOD)))
+    h.world.voice.script = [ENTERPRISE_CALL]
+
+    def broken_post(channel_id, text):
+        raise PermanentToolError("not_in_channel")
+
+    h.world.slack.post = broken_post  # welcome post fails after the channel exists
+    rid = h.receive(EMAIL)
+    assert h.status(rid) == "ESCALATED"
+    [cid] = h.world.slack.channels
+    assert h.store.get_run(rid)["slack_channel_id"] == cid
 
 
 def test_slack_channel_name_taken_escalates_and_keeps_project(settings):

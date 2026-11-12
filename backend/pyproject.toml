@@ -35,7 +35,8 @@ packages = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q --disable-socket --allow-unix-socket"
+addopts = "-q --disable-socket --allow-unix-socket -m 'not stress'"
+markers = ["stress: slow load/chaos suite (tests/stress); run with `uv run pytest -m stress`"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
@@ -57,6 +58,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-socket>=0.8.1",
+    "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
     "ruff>=0.17.4",
 ]

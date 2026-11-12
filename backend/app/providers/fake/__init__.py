@@ -1,6 +1,7 @@
 """Scripted, in-memory stand-ins for every external system. Used by tests and `make simulate`."""
 
 import itertools
+import re
 
 from app.services.keys import customer_key
 from app.tools.definitions import (
@@ -189,7 +190,9 @@ class FakeSlack:
         self.channels: dict[str, dict] = {}
 
     def create_channel(self, name: str) -> str:
-        if name in self.taken or any(c["name"] == name for c in self.channels.values()):
+        # `taken` names are given without the run suffix (a test can't know the run id beforehand).
+        if name in self.taken or re.sub(r"-[0-9a-f]{8}$", "", name) in self.taken \
+                or any(c["name"] == name for c in self.channels.values()):
             raise PermanentToolError("name_taken")
         cid = f"C{len(self.channels) + 1:04d}"
         self.channels[cid] = {"name": name, "topic": "", "members": [], "shared_invites": [],

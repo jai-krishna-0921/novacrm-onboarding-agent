@@ -18,7 +18,7 @@ from app.providers.fake import TODO
 from app.providers.real.rocketlane import RocketlaneClient
 from app.services.migration_check import MigrationDataUnavailable
 from app.services.tracking import PHASES, Tracker, progress_message, static_handoff
-from app.tools.registry import ToolNotAllowed
+from app.tools.registry import PermanentToolError, ToolNotAllowed
 
 BASE = "https://api.rocketlane.com/api/1.0"
 IN_PROGRESS = {"value": 2, "label": "In progress"}
@@ -647,3 +647,27 @@ def test_failed_internal_post_does_not_block_the_handoff(ent):
     t.sync(rid)
     assert h.status(rid) == "HANDED_OFF"
     assert any(a["step"] == "handoff_slack" and a["status"] != "ok" for a in h.store.audit_rows if a["run_id"] == rid)
+
+
+def test_failed_internal_post_is_retried_on_a_later_sync_exactly_once(ent):
+    h, rid = ent
+    internal = _with_handoff_channel(h)
+    real_post = h.world.slack.post
+
+    def down(channel_id, text):
+        if channel_id == "CHANDOFF":
+            raise PermanentToolError("channel_not_found")  # Slack outage for the internal channel only
+        return real_post(channel_id, text)
+
+    h.world.slack.post = down
+    t = tracker(h)
+    finish_all_but_go_live(h, t, rid)
+    mark(h, phase="Go-Live")
+    t.sync(rid)
+    assert h.status(rid) == "HANDED_OFF" and internal == []
+    assert rid in t.due_runs(), "a handed-off run with a pending internal post must still be synced"
+    h.world.slack.post = real_post  # Slack is back
+    t.sync(rid)
+    assert len(internal) == 1 and h.store.get_tracking(rid)["handed_off_at"]
+    t.sync(rid)
+    assert len(internal) == 1 and rid not in t.due_runs()  # posted once, then no longer tracked

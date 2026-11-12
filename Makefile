@@ -5,7 +5,7 @@ up:        ; docker compose up -d --wait
 down:      ; docker compose down
 migrate:   ; $(BE) uv run alembic upgrade head
 seed:      ; $(BE) uv run python -m app.db.seed
-test:      ; $(BE) PROVIDER_MODE=fake uv run pytest
+test:      ; $(BE) PROVIDER_MODE=fake uv run pytest -n 4   # 4 xdist workers (~8 s vs ~14 s serial); stress suite: -m stress
 eval:      ; $(BE) uv run python -m evals.run_evals $(ARGS)
 simulate:  ; $(BE) PROVIDER_MODE=fake uv run python -m scripts.simulate $(SCENARIO)
 lint:      ; $(BE) uv run ruff check . && uv run mypy app

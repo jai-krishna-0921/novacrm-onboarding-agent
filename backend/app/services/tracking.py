@@ -136,14 +136,8 @@ class Tracker:
 
     # ---------- which runs ----------
     def due_runs(self) -> list[str]:
-        out = []
-        for run in self.store.list_runs(500):
-            if not run.get("rocketlane_project_id") or run.get("status") in SKIP_STATUSES:
-                continue
-            if (self.store.get_tracking(run["id"]) or {}).get("handed_off_at"):
-                continue
-            out.append(run["id"])
-        return out
+        # Every live, not-handed-off project, however old (never "the newest N runs").
+        return [run["id"] for run in self.store.list_trackable_runs(SKIP_STATUSES)]
 
     # ---------- one sync ----------
     def sync(self, run_id: str) -> dict:
@@ -151,6 +145,8 @@ class Tracker:
         run = self.store.get_run(run_id) or {}
         prev = self.store.get_tracking(run_id)
         if prev and prev.get("handed_off_at"):
+            if prev.get("handoff_slack") == "pending":  # the internal #cs-handoffs post failed: retry (idempotent)
+                self._post_internal_handoff(run, prev.get("handoff_summary") or "")
             return {"run_id": run_id, "changed": False, "actions": [], "skipped": "already handed off"}
         listed = self.registry.call(AGENT, "rocketlane_list_tasks", {"project_id": run["rocketlane_project_id"]},
                                     run_id=run_id, rationale="periodic project sync", audit_success=False)
@@ -308,6 +304,10 @@ class Tracker:
                                 f"{'completed' if mv and mv['completed'] else 'open'}, migration {state}, "
                                 f"{'an' if open_esc else 'no'} open migration escalation); no handoff yet")
             return "handoff blocked: migration not verified" if changed else None
+        # Every phase, not just Go-Live: a handoff stops tracking, so a phase still open now would never be announced.
+        # (Phases completed in this same sync were already announced by rule a above.)
+        if not all(t["completed"] for t in tasks if t.get("phase") in PHASES):
+            return None
         return self._handoff(run, tasks)
 
     def _handoff(self, run: dict, tasks: list[dict]) -> str:
@@ -354,9 +354,11 @@ class Tracker:
         if not channel:
             return
         rid = run["id"]
-        if channel == run.get("slack_channel_id"):
+        # Any customer's channel, not just this run's: an internal summary must never reach a customer.
+        if channel == run.get("slack_channel_id") or self.store.find_run_by_channel(channel):
             audit(self.store, rid, AGENT, "handoff_slack", status="blocked",
-                  rationale="SLACK_HANDOFF_CHANNEL is the customer-shared channel; handoff not posted to Slack")
+                  rationale="SLACK_HANDOFF_CHANNEL is a customer-shared onboarding channel; handoff not posted to Slack")
+            self.store.upsert_tracking(rid, handoff_slack="blocked")
             return
         tier = (run.get("plan_tier") or "").capitalize()
         text = (f":package: *Handoff to support: {run.get('customer_name')}* ({tier})\n"
@@ -367,7 +369,10 @@ class Tracker:
                                rationale="handoff summary to the internal support channel (not the customer channel)")
         except ToolFailed as e:
             audit(self.store, rid, AGENT, "handoff_slack", status="failed",
-                  rationale=f"handoff is in Rocketlane; internal Slack post failed: {e.reason}")
+                  rationale=f"handoff is in Rocketlane; internal Slack post failed (retried next sync): {e.reason}")
+            self.store.upsert_tracking(rid, handoff_slack="pending")
+            return
+        self.store.upsert_tracking(rid, handoff_slack="posted")
 
     def handoff_facts(self, run: dict, tasks: list[dict]) -> dict:
         rule = tier_rules(self.settings)[Tier(run["plan_tier"])]

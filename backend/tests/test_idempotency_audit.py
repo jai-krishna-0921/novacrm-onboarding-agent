@@ -271,7 +271,9 @@ def test_restart_after_retell_accepted_a_retry_call_does_not_dial_that_attempt_a
 
 def test_two_deal_emails_for_one_opportunity_confirmed_concurrently_create_one_project(settings):
     """Protected by the lock + the local active-run check, even while Rocketlane search can't see the first
-    project yet (search_lag)."""
+    project yet (search_lag). Since review 5 the second run is normally stopped before dialling (in-flight
+    duplicate); to keep covering the post-call check, both runs are put on the phone first (the second while
+    the first's in-flight status is hidden from the pre-call check), then confirmed concurrently."""
     s = settings.model_copy(update={"gmail_push_token": TOKEN, "retell_api_key": KEY})
     h = Harness(s, llm=FakeLLM(fields=DealFields(**GOOD)), rocketlane_search_lag=5)
     client = TestClient(create_app(Container(settings=s, store=h.store, runner=h.runner, start_poller=False)))
@@ -279,6 +281,9 @@ def test_two_deal_emails_for_one_opportunity_confirmed_concurrently_create_one_p
     for mid in ("gm-a", "gm-b"):
         rid, _ = h.runner.start(EMAIL.model_copy(update={"message_id": mid, "thread_id": mid}).model_dump())
         ids.append((rid, h.runner.pending(rid)["provider_call_id"]))
+        h.store.runs[rid]["status"] = "RECEIVED"  # hide the in-flight run from the next run's pre-call check
+    for rid, _ in ids:
+        h.store.runs[rid]["status"] = "AWAITING_CALL"
     together(*[lambda r=r, c=cid: retell_post(client, analyzed(r, call_id=c)) for r, cid in ids])
     assert len(h.world.rocketlane.projects) == 1 and len(h.world.slack.channels) == 1
     assert sorted(h.status(r) for r, _ in ids) == ["COMPLETED", "ESCALATED"]

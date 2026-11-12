@@ -182,8 +182,8 @@ def build_intake(d: Deps):
                            customer_name=x["customer_name"])
         if other := d.store.find_active_run(opportunity_id=x.get("opportunity_id"), customer_key=key,
                                             exclude_run_id=s["run_id"]):
-            return d.escalate(s, AGENT, f"Existing onboarding run {other['id']} already has a project "
-                                        f"for this customer/opportunity", "duplicate")
+            return d.escalate(s, AGENT, f"Existing onboarding run {other['id']} ({other.get('status')}) already has "
+                                        f"a project or is in progress for this customer/opportunity", "duplicate")
         if d.store.peek_idem(f"project:{s['run_id']}"):
             # This run's own create was interrupted: the project Rocketlane may show is ours, and
             # create_project's reconcile lookup adopts it instead of creating a second one.

@@ -95,6 +95,15 @@ def test_tampered_or_expired_or_foreign_tokens_are_rejected(settings):
     assert rotated.verify(tok, now=1001) is None                                     # password changed
 
 
+def test_revoking_one_session_leaves_other_sessions_valid(settings):
+    s = settings.model_copy(update={"admin_password": "pw", "session_secret": "k"})
+    a = Auth(lambda: s)
+    laptop, phone = a.sign("admin"), a.sign("admin")
+    a.revoke(laptop)
+    assert a.verify(laptop) is None and a.verify(phone) == "admin"
+    a.revoke("garbage")  # unknown/invalid tokens are a no-op
+
+
 def test_empty_session_secret_gets_a_random_one_per_process(settings):
     s = settings.model_copy(update={"admin_password": "pw", "session_secret": ""})
     a, b = Auth(lambda: s), Auth(lambda: s)

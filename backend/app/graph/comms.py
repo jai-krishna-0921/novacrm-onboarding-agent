@@ -67,9 +67,12 @@ def build_comms(d: Deps):
         rule = d.rules[tier]
         call = d.registry.call
         try:
-            ch = call(AGENT, "slack_create_channel", {"name": channel_name(s["extracted"]["customer_name"], tier)},
+            ch = call(AGENT, "slack_create_channel", {"name": channel_name(s["extracted"]["customer_name"], tier, rid)},
                       run_id=rid, idempotency_key=f"channel:{rid}", rationale="tier-personalized channel name")
             cid = ch.channel_id
+            # Record it now, not only at COMPLETED: if a later step escalates, the run still names its channel
+            # (humans can find it; the handoff-channel guard knows it is a customer channel).
+            d.store.upsert_run(rid, slack_channel_id=cid)
             call(AGENT, "slack_set_topic", {"channel_id": cid, "topic": topic(s, rule)}, run_id=rid,
                  idempotency_key=f"topic:{rid}")
             internal = [u for u in d.settings.slack_internal_member_ids.split(",") if u.strip()]

@@ -304,16 +304,18 @@ def test_append_note_is_a_noop_when_the_batch_is_already_there(rl):
 # ---------------- seed against local Postgres (skips when unreachable) ----------------
 
 def test_seed_creates_databases_and_is_idempotent(socket_enabled):
+    from conftest import worker_db
+
     from app.db.seed import seed_migration_demo
     base = "postgresql+psycopg://postgres:postgres@localhost:5432"
     try:
         admin = create_engine(f"{base}/postgres", isolation_level="AUTOCOMMIT")
         with admin.connect() as c:
-            for db in ("mig_test_src", "mig_test_dst"):
+            for db in (worker_db("mig_test_src"), worker_db("mig_test_dst")):
                 c.exec_driver_sql(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"Postgres not reachable: {e}")
-    src, dst = f"{base}/mig_test_src", f"{base}/mig_test_dst"
+    src, dst = f"{base}/{worker_db('mig_test_src')}", f"{base}/{worker_db('mig_test_dst')}"
     seed_migration_demo(src, dst)
     seed_migration_demo(src, dst)  # second run: no new databases, no extra rows
     source, dest = load_contacts(src), load_contacts(dst)

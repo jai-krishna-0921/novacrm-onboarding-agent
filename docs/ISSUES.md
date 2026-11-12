@@ -110,3 +110,28 @@ as transient for Retell, Slack and Gmail.
 | 58 | Rocketlane search lag: a crash seconds after a create may not find the new project on restart | Low | Open: escalates as "verify in Rocketlane". |
 | 59 | A human "retry" after an unknown call outcome places a new call (escalation text warns) | Low | Accepted. |
 | 60 | ~35 pre-existing mypy errors (`make lint`) | Low | Open: ruff is clean; mypy errors are typing-only. |
+
+## Stress test (2026-11-12, fake providers + local Postgres)
+
+Ran: 200 concurrent deal emails through the real app with push + poller racing and ~290 call webhooks (25 %
+duplicated, 10 % lost, stale/forged mixed in); 120 emails at 10–30 % injected provider faults with human retries;
+8 processes killed right after a side effect and restarted over the same Postgres; 50 tracked projects with tasks
+completing in random order and `tick()` racing `/sync`; 12k tool-call and 10k LLM-call rows behind the dashboard
+endpoints; 200 parallel wrong-password logins. Invariants that held: one project per opportunity, one call per
+attempt, one channel + welcome per project, every run done or escalated, complete masked audit trails, one progress
+post per phase, one handoff note, dashboard aggregates equal a brute-force recount, endpoints < 70 ms, auth intact.
+
+| # | Issue | Sev | Status |
+|---|---|---|---|
+| 67 | Two long customer names truncate to the same Slack channel name; a Slack timeout on the second adopts the first customer's channel | Critical | Fixed: channel names end in an 8-char hash of the run id; timeout reconcile only adopts a channel carrying this run's hash. |
+| 68 | Scheduler and tracking only scan the newest 500 runs (older retries/projects ignored) | High | Fixed: scheduler and tracking select runs by status (indexed), any age. |
+| 69 | Re-sent deal email while the first run is still on the phone calls the AE again (pre-check only saw runs with a project) | Medium | Fixed: pre-call duplicate check includes active runs awaiting a call/retry. |
+| 70 | Gmail push ack waits behind lock-blocked background work | Medium | Fixed: async Gmail push and /healthz; bursts coalesce into one queued sync. |
+| 71 | Non-Latin customer names normalise to an empty key (false duplicates, same channel name) | Medium | Fixed: Unicode-aware customer key with a hash fallback (never empty). |
+| 72 | `SLACK_HANDOFF_CHANNEL` pointing at another customer's channel isn't refused | Medium | Fixed: refused if the handoff channel belongs to any run. |
+| 73 | Huge `offset` / id on dashboard endpoints → 500 instead of 422 | Low | Fixed: offset and ids bounded → 422. |
+| 74 | Logout doesn't revoke the session server-side (copied cookie valid for 12 h) | Low | Fixed: session ids revoked on logout (in-process list; single worker). |
+| 75 | Handoff could fire with earlier-phase tasks still open | Low | Fixed: handoff waits for every phase. |
+| 76 | Failed `#cs-handoffs` post never retried; channel id not recorded on escalated runs | Low | Fixed: failed #cs-handoffs post retried on the next sync; channel id saved at creation. |
+| 77 | Default test suite ~22 s (budget 10 s) | Low | Fixed: pytest-xdist (-n 4) and shared per-worker Postgres; ~8 s. |
+

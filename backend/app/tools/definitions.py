@@ -5,12 +5,15 @@ assert on exactly what would be sent to the real API.
 """
 
 import math
+import re
 from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
 from app.services.store import Store
 from app.tools.registry import PermanentToolError, ToolRegistry
+
+RUN_UNIQUE_CHANNEL = re.compile(r"-[0-9a-f]{8}$")  # see guardrails.output.channel_name(run_id=...)
 
 ALLOWLIST: dict[str, set[str]] = {
     "intake": {"ae_lookup", "gmail_reply", "voice_start_call",
@@ -260,6 +263,10 @@ def build_registry(store: Store, p: Providers, **kw) -> ToolRegistry:
         return GmailReplyOut(message_id=mid) if mid else None
 
     def slack_channel_exists(a: SlackCreateIn) -> SlackCreateOut | None:
+        # Adopt by name only when the name is run-unique (channel_name(..., run_id) ends in a run hash): a
+        # customer-only name could belong to another customer's channel (cross-customer leak), so never adopt it.
+        if not RUN_UNIQUE_CHANNEL.search(a.name):
+            raise PermanentToolError(f"channel name {a.name!r} is not run-unique; cannot prove which run owns it")
         cid = p.slack.find_channel(a.name)
         return SlackCreateOut(channel_id=cid) if cid else None
 

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import unicodedata
@@ -32,13 +33,20 @@ def check_welcome(text: str, customer_name: str, rule: TierRule) -> list[str]:
     return problems
 
 
-def channel_name(customer_name: str, tier: Tier) -> str:
+def channel_name(customer_name: str, tier: Tier, run_id: str | None = None) -> str:
+    """Slack-safe channel name. With `run_id` the name ends in a short hash of the run id, so it is unique per run:
+    two customers whose names truncate or ASCII-fold to the same slug never share a name, and the create-channel
+    reconcile (find by name after a timeout) can only ever adopt the channel this run created."""
     ascii_name = unicodedata.normalize("NFKD", customer_name).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-") or "customer"
-    suffix = f"-{tier.value}"
+    suffix = f"-{tier.value}" + (f"-{run_suffix(run_id)}" if run_id else "")
     prefix = "onboarding-"
     slug = slug[: 80 - len(prefix) - len(suffix)].rstrip("-")
     return f"{prefix}{slug}{suffix}"
+
+
+def run_suffix(run_id: str) -> str:
+    return hashlib.sha256(run_id.encode()).hexdigest()[:8]
 
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+|<@[A-Z0-9]+>")
