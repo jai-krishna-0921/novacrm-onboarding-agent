@@ -13,9 +13,21 @@ Before recording:
 
 Hi, I’m Jai Krishna. This is my submission for the Rocketlane Forward Deployed Engineer assignment.
 
-I built a working system for NovaCRM that takes a closed-deal email from Sales and runs the whole customer onboarding. It confirms the plan with the account executive on a real phone call, creates the Rocketlane project from the right template, opens a personalised Slack channel, and keeps tracking the project until the customer is handed over to support.
+I built an **agentic, multi-agent system** for NovaCRM that takes a closed-deal email from Sales and runs the whole customer onboarding end to end.
 
-Everything you’ll see is live: real Gmail, a real Retell voice call, the real Rocketlane API, and a real Slack workspace, deployed on AWS.
+It confirms the plan with the account executive on a real phone call, creates the Rocketlane project from the right template, opens a personalised Slack channel, and then keeps watching the project until the customer is handed over to support.
+
+Three AI agents do the work. Each has its own job, its own tools and its own guardrails. They are coordinated by LangGraph, and a human is brought in whenever something is unclear.
+
+Everything you’ll see is live: real Gmail, a real Retell voice call, the real Rocketlane API, a real Slack workspace and a real customer database, deployed on AWS.
+
+I also went beyond the brief:
+- **automatic data-migration verification** against the customer’s own database;
+- **live project tracking**, with progress posted to the customer;
+- **call recordings and transcripts** in the dashboard;
+- a full observability dashboard;
+- evals on real Claude;
+- chaos testing.
 
 ## Slide 2: The problem (0:30, 1 min)
 
@@ -48,7 +60,7 @@ Here is how it fits together.
 
 ## Slide 4: The three agents (3:00, 1.5 min)
 
-The agents are permission boundaries, not three chatbots.
+This is a multi-agent system. Each agent is agentic within its own lane: it reads unstructured input, decides its next step, calls its tools and hands off to the next agent. But each one runs inside hard guardrails. The agents are permission boundaries, not three chatbots that can each do anything.
 
 - **Agent 1, Intake and Routing.**
   - It reads the email, checks the sender, calls the AE, picks the template and creates the Rocketlane project.
@@ -126,7 +138,7 @@ On top of that there are over 900 automated tests, plus stress and chaos suites.
 
 ## Slide 8: Data migration (7:45, 45 s)
 
-Priya’s biggest pain was migration being marked done without being verified.
+This part goes beyond what the brief asked for. Priya’s biggest pain was migration being marked done without being verified, so I made the agent prove it.
 
 The CSM connects the customer’s old database in the dashboard with a read-only user. The connection is tested before saving, the password is stored encrypted, and it is never shown again.
 
@@ -211,5 +223,24 @@ And what the design enforces:
 - **evals gate every prompt change**, and every issue I found while testing is written down with its fix in `docs/ISSUES.md`. The full decision log is in `docs/DECISIONS.md`, and every guardrail with the test that proves it is in `docs/GUARDRAILS.md`.
 
 Slack is real here, not mocked. The one production difference is Slack Connect: inviting the customer’s workspace needs a paid plan, so on the free plan that invite is a manual step, which the system flags.
+
+To sum up, this is a production-minded, agentic, multi-agent system.
+
+**Everything the brief asked for:**
+- Gmail trigger;
+- a real voice call to confirm the tier;
+- the Rocketlane project from the right template;
+- the personalised Slack channel;
+- the Rocketlane overdue automation;
+- guardrails;
+- the automated tests.
+
+**What I added on top:**
+- automatic data-migration verification against the customer’s own database;
+- a tracking agent that keeps the customer updated and reopens unverified work;
+- call recordings and transcripts;
+- a full observability dashboard;
+- evals on real Claude with zero false tier confirmations;
+- idempotency tested under chaos.
 
 Thank you for watching.
