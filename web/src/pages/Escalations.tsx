@@ -102,7 +102,7 @@ function EscalationRow({ e, run, current }: { e: Escalation; run?: Run; current:
           </span>
         </span>
         <span className="hidden items-center gap-1 self-center text-sm font-medium text-accent sm:inline-flex">
-          Decide
+          {e.kind === "tracking" ? "View" : "Decide"}
           <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" aria-hidden />
         </span>
       </Link>

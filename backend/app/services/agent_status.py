@@ -86,7 +86,10 @@ def build_status(store: Store, s: Settings, integrations: list[dict], *, now: fl
         "tracking": dict(
             status=status(bool(trackable) and stale(kv[HB_TRACKING], s.tracking_interval_seconds, now, started_at),
                           "rocketlane" in bad, bool(trackable)),
-            stats={"projects_tracked": len(trackable), "progress_posts": step_n("tracking", "phase_complete"),
+            # customer updates go out through Agent 2: one welcome per channel, the rest are progress posts
+            stats={"projects_tracked": len(trackable),
+                   "progress_posts": max(0, tool_n(tools, "slack_post_message", "comms")
+                                         - step_n("comms", "setup_channel", ("ok", "degraded"))),
                    "migration_checks": step_n("migration", "migration_check", ("ok", "escalated")),
                    "reopens": tool_n(tools, "rocketlane_set_task_status", "tracking"),
                    "handoffs": step_n("tracking", "handoff")},
