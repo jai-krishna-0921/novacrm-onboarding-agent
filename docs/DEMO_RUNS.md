@@ -1,6 +1,25 @@
 # Demo runs: emails to send and what to say on the call
 
-Send every email **from an AE address in the directory**: `jkjia0921@gmail.com` (Sam Altman) or `jai261003@gmail.com` (Jai Krishna). Send it **to the deals inbox**. The call comes to the AE’s phone.
+## People and roles
+
+| Who | Email | Role |
+|---|---|---|
+| Deals inbox | `jaikrishna0921@gmail.com` | Gmail inbox the agents watch (send deal emails **to** this) |
+| AE 1 (Sam Altman) | `jkjia0921@gmail.com` | Account Executive in the AE directory; gets the call |
+| AE 2 (Jai Krishna) | `jai261003@gmail.com` | Account Executive in the AE directory; gets the call |
+| Project Owner | `jaikrishna0921@gmail.com` | Owns every Rocketlane project; overdue escalation after 4 days |
+| Project Manager | `jaikrishna0921+pm@gmail.com` | Project Manager placeholder; overdue escalation after 1 day |
+| Dedicated CSM (Enterprise) | `jaikrishna0921+csm@gmail.com` | Customer Success placeholder on Enterprise projects |
+| Pooled CSM (Growth) | `sampleuser1@rocketlane.com` (Rachel) | Customer Success placeholder on Growth projects |
+| Customer contact | from the email (for example `anna@mavis.example`) | Customer placeholder in Rocketlane; the Slack Connect invite goes here |
+
+The roles are assigned by code from the tier, using `TIER_RULES` in configuration, never by the LLM. That’s why an Enterprise project gets the dedicated CSM and a Growth project gets the pooled one.
+
+**Worth showing for about 15 seconds:** in the Run 1 project, open Rocketlane → Members (or a task’s assignee) to show the PM and the dedicated CSM. Then in Run 2, show that the Growth project has the pooled CSM, Rachel. This proves the template and role mapping, which Part 4 tests as “template accuracy”.
+
+---
+
+Send every email **from an AE address in the directory** (`jkjia0921@gmail.com` or `jai261003@gmail.com`) **to the deals inbox** `jaikrishna0921@gmail.com`. The call comes to the AE’s phone.
 
 Each run uses a new customer and a new Salesforce id, so none of them collides with another. Re-sending a run’s email is the duplicate test (Run 5).
 

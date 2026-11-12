@@ -100,7 +100,7 @@ The tracking agent then runs five checks against the data that landed in NovaCRM
 
 [**AE calls** tab, play the recording.] Here is the recording, and the tier was confirmed by all three signals.
 
-[Rocketlane.] The project was created from the Enterprise template, which runs for 30 days with a dedicated CSM.
+[Rocketlane, then open Members.] The project was created from the Enterprise template, which runs for 30 days with a dedicated CSM. The roles were filled in by code, based on the tier. I am the project owner, the project manager is assigned, and the dedicated CSM is assigned, while a Growth project would get the pooled CSM instead.
 
 [Slack.] The channel and the welcome message are personalised, and they contain no price and nothing internal.
 
