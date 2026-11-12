@@ -30,17 +30,17 @@ describe("migration problem highlighting", () => {
       problemCount({
         source_count: 1,
         dest_count: 1,
-        problems: { duplicates: [1, 2], missing_required: [3], missing_in_dest: [] },
+        problems: { duplicates: [1, 2], missing_required: [3], missing_in_dest: [], not_in_source: [9] },
         columns,
         last_check: null,
       }),
-    ).toBe(4);
+    ).toBe(5);
     // extra destination columns are allowed, so they are not problems
     expect(
       problemCount({
         source_count: 1,
         dest_count: 1,
-        problems: { duplicates: [], missing_required: [], missing_in_dest: [] },
+        problems: { duplicates: [], missing_required: [], missing_in_dest: [], not_in_source: [] },
         columns: { ...columns, missing: [] },
         last_check: null,
       }),

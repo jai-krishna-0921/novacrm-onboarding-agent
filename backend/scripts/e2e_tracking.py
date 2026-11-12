@@ -29,7 +29,7 @@ from app.providers.fake import FakeWorld
 from app.providers.real.rocketlane import RocketlaneClient
 from app.providers.real.slack import SlackClient
 from app.services.migration_check import load_contacts, run_migration_check
-from app.services.migration_demo import repair, replace_contacts
+from app.services.migration_demo import refusal, repair, replace_contacts
 from app.services.tracking import Tracker
 from app.tools.definitions import RlCreateIn, build_registry, rocketlane_project_payload
 from app.tools.registry import AmbiguousToolError
@@ -51,6 +51,9 @@ def main() -> int:
     store = PgStore(s.database_url)  # local docker Postgres (DATABASE_URL default), never production
     if "localhost" not in s.database_url and "127.0.0.1" not in s.database_url:
         print("refusing: DATABASE_URL is not local")
+        return 2
+    if why := refusal(s):  # the script rewrites the migration destination: demo database only
+        print(f"refusing: {why}")
         return 2
     fake = FakeWorld()  # directory/gmail/voice are never used by tracking; Rocketlane and Slack are real
     registry = build_registry(store, RealProviders(fake.directory, fake.gmail, fake.voice, rl, slack))

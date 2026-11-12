@@ -50,7 +50,12 @@ describe("zod schemas", () => {
       problems: { missing_in_dest: [7] },
       last_check: null,
     });
-    expect(s.problems).toEqual({ duplicates: [], missing_required: [], missing_in_dest: [7] });
+    expect(s.problems).toEqual({
+      duplicates: [],
+      missing_required: [],
+      missing_in_dest: [7],
+      not_in_source: [],
+    });
     // payloads from before the column check still parse
     expect(s.columns).toEqual({ source: [], dest: [], missing: [], extra: [] });
   });

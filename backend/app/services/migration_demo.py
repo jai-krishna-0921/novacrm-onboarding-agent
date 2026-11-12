@@ -22,13 +22,14 @@ def refusal(s: Settings) -> str | None:
 def repair(source: Contacts, dest: Contacts) -> Table:
     """Destination with the source columns it lacks added (values copied from the source row), duplicate ids
     dropped (first row kept), blank required fields filled from the source, and source rows missing from the
-    destination added. Non-blank destination values and extra destination columns are kept. Sorted by id."""
+    destination added; rows with no id or an id the source lacks are dropped. Non-blank destination values and
+    extra destination columns are kept. Sorted by id."""
     by_id = {r["id"]: r for r in source}
     cols = compare_columns(source, dest)
     columns = cols["dest"] + cols["missing"]
     out: dict = {}
     for r in dest:
-        if r["id"] in out:
+        if r.get("id") in out or r.get("id") not in by_id:  # duplicates, and rows the source never had
             continue
         src = by_id.get(r["id"], {})
         fill = {f: src[f] for f in REQUIRED if blank(r.get(f)) and not blank(src.get(f))}
@@ -43,8 +44,10 @@ def insert_rows(conn, rows: Contacts) -> None:
     if rows:
         cols = columns_of(rows)
         q = conn.dialect.identifier_preparer.quote
+        # Bind names are positional (p0, p1, ...): column names like "First Name" are not valid parameter names.
         conn.execute(text(f"INSERT INTO contacts ({', '.join(q(c) for c in cols)}) "
-                          f"VALUES ({', '.join(':' + c for c in cols)})"), [{c: r.get(c) for c in cols} for r in rows])
+                          f"VALUES ({', '.join(f':p{i}' for i in range(len(cols)))})"),
+                     [{f"p{i}": r.get(c) for i, c in enumerate(cols)} for r in rows])
 
 
 def replace_contacts(url: str, rows: Contacts) -> None:

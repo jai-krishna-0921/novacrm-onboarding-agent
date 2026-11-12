@@ -89,18 +89,23 @@ def blank(v) -> bool:
 
 def find_problems(source: Contacts, dest: Contacts) -> dict[str, list]:
     """Problem ids per kind; the single definition behind the checks, the dashboard summary and the row tags."""
+    src_ids = {r.get("id") for r in source}
     return {
-        "duplicates": _ids(i for i, n in Counter(r["id"] for r in dest).items() if n > 1),
-        "missing_required": _ids({r["id"] for r in dest if any(blank(r.get(f)) for f in REQUIRED)}),
-        "missing_in_dest": _ids({r["id"] for r in source} - {r["id"] for r in dest}),
+        "duplicates": _ids(i for i, n in Counter(r.get("id") for r in dest).items() if n > 1),
+        "missing_required": _ids({r.get("id") for r in dest if any(blank(r.get(f)) for f in REQUIRED)}),
+        "missing_in_dest": _ids(src_ids - {r.get("id") for r in dest}),
+        # destination rows with no id, or an id the source never had (they inflate the count)
+        "not_in_source": _ids({r.get("id") for r in dest if r.get("id") is None or r.get("id") not in src_ids}),
     }
 
 
 def row_problems(row: dict, side: str, problems: dict[str, list]) -> list[str]:
-    """Tags for one row: dest rows get duplicate / missing_<field>; source rows get missing_in_dest."""
+    """Tags for one row: dest rows get duplicate / not_in_source / missing_<field>; source rows get
+    missing_in_dest."""
     if side == "source":
-        return ["missing_in_dest"] if row["id"] in problems["missing_in_dest"] else []
-    tags = ["duplicate"] if row["id"] in problems["duplicates"] else []
+        return ["missing_in_dest"] if row.get("id") in problems["missing_in_dest"] else []
+    tags = ["duplicate"] if row.get("id") in problems["duplicates"] else []
+    tags += ["not_in_source"] if row.get("id") in problems["not_in_source"] else []
     return tags + [f"missing_{f}" for f in REQUIRED if blank(row.get(f))]
 
 

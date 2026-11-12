@@ -137,3 +137,8 @@ post per phase, one handoff note, dashboard aggregates equal a brute-force recou
 
 | 78 | Migration check read only `id, name, email`: a column dropped in transit (schema drift) went unnoticed, and demo tables had identical layouts | Medium | Fixed: tables read with all columns; fifth check `schema` fails on source columns missing in the destination; demo tables now differ in rows and columns. |
 | 79 | Problem ids sorted as text (`5` after `47`) | Low | Fixed: numeric ids sort numerically. |
+| 80 | Destination rows with no id / an id the source lacks failed `record_count` but the dashboard showed no problem, and Fix kept them | High | Fixed: new problem kind `not_in_source` (summary, row tags, dashboard); Fix drops those rows. |
+| 81 | Destination without an `id` column crashed the check (KeyError) instead of failing `schema` | High | Fixed: ids read with `.get`; the schema check reports `id` missing. |
+| 82 | Fix failed on column names with spaces/hyphens ("First Name") | Medium | Fixed: positional bind parameters; identifiers quoted. |
+| 83 | `make e2e-tracking` rewrote MIG_DEST_URL without the demo-database guard | Medium | Fixed: refuses unless the destination is the demo database. |
+| 84 | A customer column literally named `problems` is shadowed in `/migration/data` rows | Low | Known; demo tables don't have one. |

@@ -115,6 +115,9 @@ function migrationProblems(db: Db) {
       ),
     ],
     missing_in_dest: source.filter((r) => !destIds.has(r.id)).map((r) => r.id),
+    not_in_source: [
+      ...new Set(dest.filter((r) => r.id == null || !source.some((x) => x.id === r.id)).map((r) => r.id)),
+    ],
   };
 }
 /** Same shape as compare_columns() in services/migration_check.py. */

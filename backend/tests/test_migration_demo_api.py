@@ -13,11 +13,12 @@ from app.services.migration_demo import repair, replace_contacts
 from app.sim import Harness
 
 ORIGIN = {"Origin": "http://testserver"}
-PLANTED = {"duplicates": [23], "missing_required": [17, 36, 44], "missing_in_dest": [12, 31, 47, 58]}
+PLANTED = {"duplicates": [23], "missing_required": [17, 36, 44], "missing_in_dest": [12, 31, 47, 58],
+           "not_in_source": []}
 SRC_COLS, DST_COLS = (t.columns for t in demo_contacts())
 PLANTED_COLS = {"source": SRC_COLS, "dest": DST_COLS, "missing": ["phone"], "extra": ["lifecycle_stage"]}
 FIXED_COLS = {"source": SRC_COLS, "dest": DST_COLS + ["phone"], "missing": [], "extra": ["lifecycle_stage"]}
-CLEAN = {"duplicates": [], "missing_required": [], "missing_in_dest": []}
+CLEAN = {"duplicates": [], "missing_required": [], "missing_in_dest": [], "not_in_source": []}
 
 
 class FakeDb:
@@ -76,7 +77,8 @@ def test_missing_in_dest_and_missing_name_are_reported(settings):
     db.dest[0] = {**db.dest[0], "name": "  "}
     c, _, _ = make(settings, db)
     p = c.get("/migration/summary").json()["problems"]
-    assert p == {"duplicates": [23], "missing_required": [1, 17, 36, 44], "missing_in_dest": [5, 12, 31, 47, 58]}
+    assert p == {"duplicates": [23], "missing_required": [1, 17, 36, 44], "missing_in_dest": [5, 12, 31, 47, 58],
+                 "not_in_source": []}
     src = c.get("/migration/data", params={"side": "source", "only_problems": True}).json()
     assert src["total"] == 5
     assert src["rows"][0] == {**db.source[4], "created_on": db.source[4]["created_on"].isoformat(),

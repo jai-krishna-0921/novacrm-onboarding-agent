@@ -1,8 +1,8 @@
 import type { MigrationDataRow, MigrationSummary } from "./schemas";
 
 // Labels and tones for migration problems, matching backend/app/services/migration_check.py: row codes are
-// duplicate, missing_<field> (name, email) and missing_in_dest; summary keys are duplicates, missing_required and
-// missing_in_dest, plus columns.missing for the schema check.
+// duplicate, not_in_source, missing_<field> (name, email) and missing_in_dest; summary keys are duplicates, missing_required and
+// missing_in_dest and not_in_source, plus columns.missing for the schema check.
 
 export const PROBLEM: Record<string, { label: string; explain: string }> = {
   duplicate: { label: "Duplicate id", explain: "The same id appears more than once in the destination." },
@@ -14,6 +14,10 @@ export const PROBLEM: Record<string, { label: string; explain: string }> = {
   },
   missing_name: { label: "Missing name", explain: "The name is blank. Name and email are both required." },
   missing_email: { label: "Missing email", explain: "The email is blank. Name and email are both required." },
+  not_in_source: {
+    label: "Not in source",
+    explain: "This destination row has no id, or an id the source never had.",
+  },
   missing_in_dest: {
     label: "Not in destination",
     explain: "This source row was not copied to the destination.",
@@ -35,7 +39,11 @@ export function rowTone(row: Pick<MigrationDataRow, "problems">): RowTone {
 export function problemCount(s: MigrationSummary): number {
   const p = s.problems;
   return (
-    p.duplicates.length + p.missing_required.length + p.missing_in_dest.length + s.columns.missing.length
+    p.duplicates.length +
+    p.missing_required.length +
+    p.missing_in_dest.length +
+    p.not_in_source.length +
+    s.columns.missing.length
   );
 }
 
