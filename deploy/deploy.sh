@@ -29,6 +29,10 @@ if [ ! -f .env ]; then
   printf "POSTGRES_PASSWORD=%s\nDOMAIN=%s\n" "$(openssl rand -hex 24)" "$DOMAIN" > .env
   echo "generated postgres password"
 fi
+if ! grep -q '^SESSION_SECRET=' .env; then  # sessions + encryption of saved customer-database credentials
+  printf "SESSION_SECRET=%s\n" "$(openssl rand -hex 32)" >> .env
+  echo "generated session secret"
+fi
 if ! grep -q '^ROCKETLANE_WEBHOOK_TOKEN=' .env; then  # secret for /webhooks/rocketlane (Basic Auth password)
   printf "ROCKETLANE_WEBHOOK_TOKEN=%s\n" "$(openssl rand -hex 24)" >> .env
   echo "generated rocketlane webhook token (read it on the host: grep ROCKETLANE_WEBHOOK_TOKEN /opt/novacrm/.env)"
