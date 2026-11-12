@@ -151,3 +151,4 @@ post per phase, one handoff note, dashboard aggregates equal a brute-force recou
 | 91 | Salesforce links rewritten by Outlook SafeLinks / Google redirects were rejected (needless clarification email) | Medium | Fixed: one level of gateway wrapping is unwrapped before validation. |
 | 92 | `/lightning/r/<id>/view` (no `Opportunity` segment) rejected | Low | Fixed: segment optional; the `006` id prefix is still required. |
 | 93 | Internal flag post skipped silently when no internal channel is configured | Low | Fixed: audited. |
+| 94 | Live call (Waffle Hut): an Indian-English "Growth" was transcribed as "group", "gurus", "Brooklyn"; 2 of 3 calls ended unclear (the guardrail held: no guess, retried, confirmed on call 3) | Medium | Fixed: Retell agent v3 with `en-IN`, accurate STT, boosted keywords Enterprise/Growth/NovaCRM; garbled-but-close answers get a yes/no "Did you say the Growth plan?" instead of a restart. |

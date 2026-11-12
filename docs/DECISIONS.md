@@ -58,6 +58,7 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 | `make retell-setup` creates or updates the agent, **publishes** it and **binds the number**. Updates edit the existing LLM on a new draft version (published versions are immutable; the response engine can't be swapped). | First live call 404'd: unpublished agent, unbound number, and a hyphen in the number. |
 | Phone settings are normalised to E.164 at load time. | Dashboard-formatted numbers broke the first call. |
 | **Pacing:** voice speed 0.95, responsiveness 0.9, interruption sensitivity 0.5, short opener; Retell LLM `claude-5.5-haiku`. Prompt asks for short sentences and verbatim repeats. | Live calls: 1.0 too fast to follow, 0.8 with responsiveness 0.6 felt like a 1 s+ delay, and 0.8 interruption sensitivity chopped the opener. |
+| **Recognition:** language `en-IN`, Retell `stt_mode=accurate`, boosted keywords Enterprise / Growth / NovaCRM. A garbled-but-close answer ("group plan") gets a yes/no "Did you say the Growth plan?"; a yes counts as the read-back. | Live call: with en-US/fast STT an Indian-English "Growth" came through as "group", "gurus", "Brooklyn" and two of three calls ended unclear. The guardrail held (no guess), but the AE had to take three calls. The yes/no question only ever names the plan the AE seemed to say, and still needs an explicit yes plus our transcript cross-check. |
 | Webhook verified by HMAC signature (`v=ts,d=hex`, ±5 min). | Anyone can POST to a public URL. |
 
 ## 6. Rocketlane

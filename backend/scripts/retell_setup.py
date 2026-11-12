@@ -21,9 +21,13 @@ Steps:
 2. Ask: "Is {{customer_name}} on the Enterprise plan or the Growth plan?"
 3. If the answer clearly names exactly one plan, read it back: "Just to confirm, {{customer_name}} is on the
    <plan> plan, correct?" and wait for an explicit yes or no.
-4. If the answer is hedged, indirect or unclear ("I think", "maybe", "the big one", "you decide"), ask once
+4. If the answer SOUNDS like one plan but the word came through garbled (for example "group", "gross",
+   "gurus" or "grow" for Growth; "enter prize" or "entire" for Enterprise), do not count it and do not restart.
+   Ask a yes/no question about that one plan: "Did you say the Growth plan? Please say yes or no." A yes counts
+   as the read-back confirmation for that plan; a no means ask step 2 again.
+5. If the answer is hedged, indirect or unclear ("I think", "maybe", "the big one", "you decide"), ask once
    more. If it is still unclear, say a teammate will follow up by email, thank them and end the call.
-5. After an explicit yes, thank them and end the call. After a no, ask the question once more.
+6. After an explicit yes, thank them and end the call. After a no, ask the question once more.
 
 Speaking style: the AE may be on a mobile line with an Indian or other non-US accent. Speak slowly and clearly,
 use short sentences, and say "Enterprise" and "Growth" distinctly. Ask one question at a time and wait. If the AE
@@ -49,6 +53,10 @@ def main() -> None:
     ap.add_argument("--model", default="claude-5.5-haiku", help="Retell LLM model for the call")
     ap.add_argument("--voice-speed", type=float, default=0.95, help="0.5 (slow) .. 2.0 (fast); Retell default 1.0")
     ap.add_argument("--countries", default="US,IN", help="allowed outbound country codes, comma-separated")
+    # Live call 2026-11-12: with en-US/fast STT, an Indian-English "Growth" came through as "group", "gurus",
+    # "Brooklyn"; two of three calls ended unclear. en-IN + accurate STT + boosted plan names fix recognition.
+    ap.add_argument("--language", default="en-IN", help="STT/TTS language, e.g. en-IN, en-US")
+    ap.add_argument("--stt-mode", default="accurate", choices=["fast", "accurate"])
     args = ap.parse_args()
 
     s = Settings()
@@ -72,7 +80,9 @@ def main() -> None:
         max_call_duration_ms=120_000,
         end_call_after_silence_ms=15_000,
         webhook_url=f"{s.public_base_url.rstrip('/')}/webhooks/voice",
-        language="en-US",
+        language=args.language,
+        stt_mode=args.stt_mode,
+        boosted_keywords=["Enterprise", "Growth", "NovaCRM"],  # bias recognition toward the two plan names
         # Pacing (live calls 2026-11-11/12): 1.0 was too fast to follow, 0.8 too slow; 0.95 with quicker turn-taking.
         voice_speed=args.voice_speed,
         responsiveness=0.9,          # reply soon after the AE stops (0.6 felt like a 1 s+ delay)
