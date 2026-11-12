@@ -44,6 +44,7 @@ make test                       # offline: fake providers + scripted LLM, ~5 s
 make simulate SCENARIO=all      # 10 mock end-to-end runs (happy, no-answer, API down, duplicates, ...)
 make eval                       # real-Claude evals: extraction, transcripts (false-confirmed must be 0), welcome
 make preflight                  # read-only checks of every integration
+make e2e-tracking               # live: throwaway Rocketlane project + Slack channels, ticks tasks, asserts Agent 3, cleans up
 make api                        # FastAPI on :8000 (PROVIDER_MODE=fake|real)
 ```
 Setup guides: `docs/ROCKETLANE_SETUP.md`, `docs/CONNECTIONS.md`. Verified API notes: `docs/reference/`.
