@@ -776,7 +776,36 @@ export function createDb() {
     ],
   };
 
+  // AE call attempts per run (GET /runs/:id/calls); recordings are served as a tiny WAV by the handlers.
+  const calls: Record<string, J[]> = {
+    "r-7f3a91": [
+      {
+        call_id: "call_a1",
+        attempt: 1,
+        outcome: "no_answer",
+        transcript: null,
+        started_at: Date.now() - 3 * 86400_000,
+        duration_ms: 31_000,
+        has_recording: false,
+      },
+      {
+        call_id: "call_a2",
+        attempt: 2,
+        outcome: "confirmed",
+        transcript:
+          "Agent: Hi Priya, this is the NovaCRM onboarding assistant calling about Larkspur Health.\nAE: Hi, yes.\nAgent: Which plan did they sign, Starter, Growth or Enterprise?\nAE: Enterprise, the full package.\nAgent: Thanks, I will set up the Enterprise onboarding.",
+        started_at: Date.now() - 3 * 86400_000 + 3600_000,
+        duration_ms: 74_500,
+        has_recording: true,
+      },
+    ],
+  };
+  // Per-run customer database (no password is ever kept here either).
+  const migrationSources: Record<string, J> = {};
+
   return {
+    calls,
+    migrationSources,
     runs,
     audit,
     toolCalls,

@@ -27,6 +27,7 @@ from app.guardrails.output import check_customer_message, check_handoff
 from app.llm import versions as prompts
 from app.llm.client import LLMError
 from app.llm.schemas import HandoffDraft
+from app.services import migration_source
 from app.services.audit import audit
 from app.services.customer_comms import post_customer_update
 from app.services.migration_check import TASK_PREFIX as MIGRATION_VERIFIED
@@ -359,7 +360,9 @@ class Tracker:
         try:
             if self.migration_contacts is None:
                 raise MigrationDataUnavailable("migration databases not configured")
-            out = run_migration_check(self.store, self.registry, self.migration_contacts, run_id)
+            loader = migration_source.contacts_for(self.store, self.settings.session_secret, run_id,
+                                                   self.migration_contacts)
+            out = run_migration_check(self.store, self.registry, loader, run_id)
         except MigrationDataUnavailable as e:
             self._migration_escalation(run_id, f"'{task['name']}' was completed but the automatic migration check "
                                                f"could not read the migration databases ({e}); run it again with "

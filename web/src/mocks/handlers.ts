@@ -238,6 +238,8 @@ function runCheck(db: Db, runId: string) {
   return { batch_id: batch, passed, results, escalation: passed ? null : `${runId}:migration` };
 }
 
+const NO_SOURCE = { configured: false, display: null, saved_at: null, by: null };
+
 export function makeHandlers(db: Db = createDb(), opts: { latency?: number } = {}) {
   const wait = () => (opts.latency ? delay(opts.latency) : Promise.resolve());
   const run = (id: string) => db.runs.find((r) => r.id === id);
@@ -320,6 +322,45 @@ export function makeHandlers(db: Db = createDb(), opts: { latency?: number } = {
       if (!r) return detail("run not found", 404);
       if (!r.rocketlane_project_id) return detail("run has no Rocketlane project yet", 404);
       return json(runCheck(db, r.id as string));
+    }),
+    http.get("/runs/:id/calls", ({ params }) => {
+      if (!run(String(params.id))) return detail("run not found", 404);
+      return json(db.calls[String(params.id)] ?? []);
+    }),
+    http.get("/runs/:id/calls/:callId/recording", ({ params }) => {
+      const c = (db.calls[String(params.id)] ?? []).find((x) => x.call_id === params.callId);
+      if (!c?.has_recording) return detail("no recording for this call", 404);
+      return new HttpResponse(new Uint8Array(44), { headers: { "Content-Type": "audio/wav" } });
+    }),
+    http.get("/runs/:id/migration-source", ({ params }) => {
+      if (!run(String(params.id))) return detail("run not found", 404);
+      return json(db.migrationSources[String(params.id)] ?? NO_SOURCE);
+    }),
+    http.put("/runs/:id/migration-source", async ({ params, request }) => {
+      await wait();
+      if (!run(String(params.id))) return detail("run not found", 404);
+      const b = (await request.json()) as J;
+      if (!/^[A-Za-z0-9.-]+$/.test(String(b.host ?? "")))
+        return detail([{ loc: ["body", "host"], msg: "host: letters, digits, dots and hyphens only" }], 422);
+      if (b.password !== "readonly")
+        return detail(
+          'could not read a contacts table there: password authentication failed for user "' +
+            String(b.username) +
+            '"',
+          400,
+        );
+      const src = {
+        configured: true,
+        display: `postgresql://${b.username}@${b.host}:${b.port}/${b.database}`,
+        saved_at: nowIso(),
+        by: "admin",
+      };
+      db.migrationSources[String(params.id)] = src;
+      return json({ ...src, rows: db.migration.source.length, columns: db.migration.sourceColumns });
+    }),
+    http.delete("/runs/:id/migration-source", ({ params }) => {
+      delete db.migrationSources[String(params.id)];
+      return json(NO_SOURCE);
     }),
     http.post("/runs/:id/migration-escalation/dismiss", async ({ params, request }) => {
       const b = (await request.json()) as J;

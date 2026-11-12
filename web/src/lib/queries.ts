@@ -23,6 +23,9 @@ export const qk = {
   toolCall: (id: number) => ["tool-call", id] as const,
   aes: ["aes"] as const,
   migSummary: ["migration", "summary"] as const,
+  runMigSummary: (id: string) => ["migration", "summary", "run", id] as const,
+  migSource: (id: string) => ["migration-source", id] as const,
+  calls: (id: string, status: string) => ["run-calls", id, status] as const,
   migData: (q: string) => ["migration", "data", q] as const,
   agents: ["agents", "status"] as const,
 };
@@ -125,6 +128,29 @@ export const useMigrationSummary = () =>
     queryFn: () => api("/migration/summary", S.MigrationSummary),
     refetchInterval: METRICS_MS,
   });
+/** The comparison against this run's own source (the customer's database once connected). */
+export const useRunMigrationSummary = (runId: string) =>
+  useQuery({
+    queryKey: qk.runMigSummary(runId),
+    queryFn: () => api(`/migration/summary?${qs({ run_id: runId })}`, S.MigrationSummary),
+    refetchInterval: METRICS_MS,
+  });
+export const useMigrationSource = (runId: string) =>
+  useQuery({
+    queryKey: qk.migSource(runId),
+    queryFn: () => api(`/runs/${enc(runId)}/migration-source`, S.MigrationSource),
+    staleTime: 30_000,
+  });
+
+/** Calls change only when the run moves on, so the status is part of the key instead of polling. */
+export const useRunCalls = (runId: string, status: string) =>
+  useQuery({
+    queryKey: qk.calls(runId, status),
+    queryFn: () => api(`/runs/${enc(runId)}/calls`, S.RunCalls),
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
+
 export const useMigrationData = (q: string) =>
   useQuery({
     queryKey: qk.migData(q),

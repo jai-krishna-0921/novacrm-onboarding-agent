@@ -15,6 +15,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { usePageMeta, type Crumb } from "@/components/layout/page-meta";
 import { ActivityTab } from "@/components/run/ActivityTab";
 import { AiToolsTab } from "@/components/run/AiToolsTab";
+import { CallsTab } from "@/components/run/CallsTab";
 import { escalationsFor, ProjectLink, StatusChip, TierChip } from "@/components/run/chips";
 import { DecisionPanels } from "@/components/run/DecisionPanel";
 import { MigrationTab } from "@/components/run/MigrationTab";
@@ -22,7 +23,7 @@ import { NowBanner } from "@/components/run/NowBanner";
 import { ProgressTab } from "@/components/run/ProgressTab";
 import { Stepper } from "@/components/run/Stepper";
 
-const TABS = ["activity", "progress", "migration", "tech"] as const;
+const TABS = ["activity", "calls", "progress", "migration", "tech"] as const;
 const FROM: Record<string, Crumb> = {
   "/escalations": { label: "Needs a human", to: "/escalations" },
   "/overview": { label: "Overview", to: "/overview" },
@@ -129,6 +130,7 @@ export function RunDetailPage() {
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="activity">Activity</TabsTrigger>
+            <TabsTrigger value="calls">AE calls</TabsTrigger>
             <TabsTrigger value="progress" badge={v.tracking ? <Badge tone="accent">{v.pct}%</Badge> : null}>
               Project progress
             </TabsTrigger>
@@ -142,6 +144,9 @@ export function RunDetailPage() {
           </TabsList>
           <TabsContent value="activity">
             <ActivityTab audit={data.audit} />
+          </TabsContent>
+          <TabsContent value="calls">
+            <CallsTab run={run} />
           </TabsContent>
           <TabsContent value="progress">
             <ProgressTab run={run} tracking={data.tracking} />

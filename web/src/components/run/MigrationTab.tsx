@@ -3,13 +3,14 @@ import { Database, Play } from "lucide-react";
 import { useState } from "react";
 import { api, enc } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
-import { qk, useMigrationSummary } from "@/lib/queries";
+import { qk, useRunMigrationSummary } from "@/lib/queries";
 import { MigrationCheckResult, type MigrationCheckRow, type Run } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useToast } from "@/components/ui/toast";
 import { CheckHistory, CheckTiles, splitBatches } from "./MigrationTiles";
+import { MigrationSourceCard } from "./MigrationSourceCard";
 import { MigrationVerdict } from "./MigrationVerdict";
 
 export function useRunMigrationCheck(runId: string | null) {
@@ -45,17 +46,21 @@ export function useRunMigrationCheck(runId: string | null) {
 
 export function MigrationTab({ run, checks }: { run: Run; checks: MigrationCheckRow[] }) {
   const { run: check, busy } = useRunMigrationCheck(run.id);
-  const summary = useMigrationSummary();
+  const summary = useRunMigrationSummary(run.id);
   if (!run.rocketlane_project_id && !checks.length)
     return (
-      <EmptyState icon={Database} title="No project yet">
-        The data migration check runs after the Rocketlane project exists.
-      </EmptyState>
+      <div className="flex flex-col gap-4">
+        <MigrationSourceCard runId={run.id} />
+        <EmptyState icon={Database} title="No project yet">
+          The data migration check runs after the Rocketlane project exists.
+        </EmptyState>
+      </div>
     );
   const { latest, older } = splitBatches(checks);
   const failed = latest.filter((c) => !c.passed).length;
   return (
     <div className="flex flex-col gap-4">
+      <MigrationSourceCard runId={run.id} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         {latest.length ? (
           <div className="flex flex-wrap items-center gap-2">

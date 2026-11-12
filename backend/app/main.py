@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi import Path as FastPath
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -28,7 +29,7 @@ from app.guardrails.decision import CallResult
 from app.llm.client import PRICES
 from app.providers.real.gmail import DEAL_SUBJECT
 from app.providers.real.retell import map_call_analyzed, verify_signature
-from app.services import agent_status, directory
+from app.services import agent_status, directory, migration_source
 from app.services.agent_status import HB_PUSH, HB_RL_PUSH, HB_SYNC, HB_TICK, HB_TRACKING, beat
 from app.services.audit import audit, redact
 from app.services.health import HEALTH_INTERVAL, INTEGRATIONS, HealthMonitor, fake_monitor, iso
@@ -37,6 +38,7 @@ from app.services.migration_check import (
     columns_of,
     compare_columns,
     find_problems,
+    load_contacts,
     row_problems,
     run_migration_check,
 )
@@ -492,10 +494,106 @@ def create_app(c: Container | None = None) -> FastAPI:
             raise HTTPException(404, "run has no Rocketlane project yet")
         with lock:
             try:
-                return run_migration_check(k.store, k.registry, k.migration_contacts, run_id,
+                loader = migration_source.contacts_for(k.store, k.settings.session_secret, run_id,
+                                                       k.migration_contacts)
+                return run_migration_check(k.store, k.registry, loader, run_id,
                                            reuse_within=MIGRATION_CHECK_REUSE_SECONDS)
             except MigrationDataUnavailable as e:
                 raise HTTPException(503, f"migration databases unreachable: {e}") from e
+
+    # ---------- per-customer migration source (the customer's own database) ----------
+    @app.get("/runs/{run_id}/migration-source")
+    def get_migration_source(run_id: str):
+        k = container()
+        if not k.store.get_run(run_id):
+            raise HTTPException(404, "run not found")
+        return migration_source.public(k.store, run_id)
+
+    @app.put("/runs/{run_id}/migration-source")
+    def put_migration_source(run_id: str, body: migration_source.SourceIn, request: Request):
+        """Test the connection (read `contacts`), then save it encrypted. The password is never returned or logged."""
+        k = container()
+        if not k.store.get_run(run_id):
+            raise HTTPException(404, "run not found")
+        if not k.settings.session_secret:
+            raise HTTPException(503, "SESSION_SECRET is not set: cannot store credentials encrypted")
+        try:
+            rows = load_contacts(migration_source.build_url(body))
+        except MigrationDataUnavailable as e:
+            msg = str(e).replace(body.password, "***") if body.password else str(e)
+            raise HTTPException(400, f"could not read a contacts table there: {msg[:300]}") from e
+        out = migration_source.save(k.store, k.settings.session_secret, run_id, body, who(request))
+        audit(k.store, run_id, "migration", "migration_source", input={"by": who(request)},
+              output={"source": out["display"], "rows": len(rows), "columns": columns_of(rows)},
+              rationale=f"customer database connected by {who(request)} ({out['display']}); read-only, "
+                        "credentials stored encrypted")
+        return {**out, "rows": len(rows), "columns": columns_of(rows)}
+
+    @app.delete("/runs/{run_id}/migration-source")
+    def delete_migration_source(run_id: str, request: Request):
+        k = container()
+        if not k.store.get_run(run_id):
+            raise HTTPException(404, "run not found")
+        migration_source.clear(k.store, run_id)
+        audit(k.store, run_id, "migration", "migration_source", input={"by": who(request)},
+              rationale=f"customer database disconnected by {who(request)}; back to the sample data")
+        return migration_source.public(k.store, run_id)
+
+    # ---------- AE call recordings (Retell) ----------
+    def run_calls(run_id: str) -> list[dict]:
+        k = container()
+        audit_rows = k.store.list_audit(run_id)
+        ids = list(dict.fromkeys(a["output"]["provider_call_id"] for a in audit_rows
+                                 if a["step"] in ("voice_webhook", "voice_reconcile") and a["status"] != "ignored"
+                                 and isinstance(a.get("output"), dict) and a["output"].get("provider_call_id")))
+        decisions = [a for a in audit_rows if a["step"] == "decide_tier"]
+        out = []
+        for i, cid in enumerate(ids):
+            info = call_info(cid)
+            d = decisions[i] if i < len(decisions) else {}
+            out.append({"call_id": cid, "attempt": i + 1, "outcome": d.get("status"),
+                        "transcript": (d.get("input") or {}).get("transcript"),
+                        "started_at": info.get("start_timestamp"), "duration_ms": info.get("duration_ms"),
+                        "has_recording": bool(info.get("recording_url"))})
+        return out
+
+    def call_info(call_id: str) -> dict:
+        """Retell call details, cached once the call has ended (the dashboard must not hit Retell on every view)."""
+        k = container()
+        if cached := k.store.get_kv(f"call:{call_id}"):
+            return json.loads(cached)
+        if k.voice is None:
+            return {}
+        try:
+            c = k.voice.get_call(call_id) or {}
+        except Exception:  # noqa: BLE001 - Retell down: show the call without its recording
+            return {}
+        info = {key: c.get(key) for key in ("recording_url", "start_timestamp", "duration_ms", "call_status")}
+        if c.get("call_status") in ("ended", "error", "not_connected"):
+            k.store.set_kv(f"call:{call_id}", json.dumps(info))
+        return info
+
+    @app.get("/runs/{run_id}/calls")
+    def list_run_calls(run_id: str):
+        if not container().store.get_run(run_id):
+            raise HTTPException(404, "run not found")
+        return run_calls(run_id)
+
+    @app.get("/runs/{run_id}/calls/{call_id}/recording")
+    def call_recording(run_id: str, call_id: str):
+        """Streams the call audio through this server (behind the login) with an audio content type."""
+        if call_id not in {c["call_id"] for c in run_calls(run_id)}:
+            raise HTTPException(404, "no such call on this run")
+        url = call_info(call_id).get("recording_url")
+        if not url or not str(url).startswith("https://"):
+            raise HTTPException(404, "no recording for this call")
+        try:
+            r = httpx.get(url, timeout=30, follow_redirects=True)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"recording unavailable: {type(e).__name__}") from e
+        kind = "audio/mpeg" if url.split("?")[0].endswith(".mp3") else "audio/wav"
+        return Response(r.content, media_type=kind, headers={"Cache-Control": "private, max-age=3600"})
 
     @app.post("/runs/{run_id}/sync")
     def sync_run(run_id: str):
@@ -663,12 +761,12 @@ def create_app(c: Container | None = None) -> FastAPI:
         return directory.public(updated)
 
     # ---------- migration demo data (source vs destination contacts, same logic as the migration check) ----------
-    def contacts() -> tuple[list[dict], list[dict]]:
+    def contacts(run_id: str | None = None) -> tuple[list[dict], list[dict]]:
         k = container()
         if k.migration_contacts is None:
             raise HTTPException(503, "migration databases are not configured")
         try:
-            return k.migration_contacts()
+            return migration_source.contacts_for(k.store, k.settings.session_secret, run_id, k.migration_contacts)()
         except MigrationDataUnavailable as e:
             raise HTTPException(503, f"migration databases unreachable: {e}") from e
 
@@ -677,13 +775,14 @@ def create_app(c: Container | None = None) -> FastAPI:
                 "columns": compare_columns(source, dest), "last_check": container().store.latest_migration_check()}
 
     @app.get("/migration/summary")
-    def migration_summary():
-        return summary(*contacts())
+    def migration_summary(run_id: str | None = Query(None, max_length=64)):
+        return summary(*contacts(run_id))
 
     @app.get("/migration/data")
     def migration_data(side: Literal["source", "dest"] = "dest", limit: int = Query(10, ge=1, le=200),
-                       offset: int = OFFSET, only_problems: bool = False):
-        source, dest = contacts()
+                       offset: int = OFFSET, only_problems: bool = False,
+                       run_id: str | None = Query(None, max_length=64)):
+        source, dest = contacts(run_id)
         problems = find_problems(source, dest)
         rows = [{**r, "problems": row_problems(r, side, problems)} for r in (source if side == "source" else dest)]
         if only_problems:

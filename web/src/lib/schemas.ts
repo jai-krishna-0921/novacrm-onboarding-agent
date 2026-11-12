@@ -326,3 +326,27 @@ export const AgentsStatus = z.object({
   rocketlane_automations: z.array(z.object({ name: z.string(), trigger: str, notify: str })).default([]),
 });
 export type AgentsStatus = z.infer<typeof AgentsStatus>;
+
+// ---------- AE call recordings ----------
+export const RunCall = z.object({
+  call_id: z.string(),
+  attempt: z.number(),
+  outcome: z.string().nullable().default(null),
+  transcript: z.string().nullable().default(null),
+  started_at: z.number().nullable().default(null),
+  duration_ms: z.number().nullable().default(null),
+  has_recording: z.boolean().default(false),
+});
+export type RunCall = z.infer<typeof RunCall>;
+export const RunCalls = z.array(RunCall);
+
+// ---------- Per-run customer database (migration source). The password never comes back. ----------
+export const MigrationSource = z.object({
+  configured: z.boolean(),
+  display: z.string().nullable().default(null),
+  saved_at: z.union([z.string(), z.number()]).nullable().default(null),
+  by: z.string().nullable().default(null),
+  rows: z.number().nullable().optional(),
+  columns: z.array(z.string()).nullable().optional(),
+});
+export type MigrationSource = z.infer<typeof MigrationSource>;

@@ -43,7 +43,7 @@ export function detailMessage(data: unknown, fallback: string): string {
   return fallback;
 }
 
-type Opts = { method?: "GET" | "POST" | "PATCH"; body?: unknown; signal?: AbortSignal };
+type Opts = { method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE"; body?: unknown; signal?: AbortSignal };
 
 export async function request(path: string, opts: Opts = {}): Promise<unknown> {
   const headers: Record<string, string> = { Accept: "application/json" };
