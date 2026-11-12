@@ -51,7 +51,7 @@ Plan to be confirmed on the call. – Jai
    - Port: `5432`
    - Database: `mavis_crm`
    - Username: `mavis_ro`
-   - Password: from `mavis-db.txt`, given to you separately and not stored in the repo
+   - Password: `admin` (demo database only)
 
    You’ll see 5 of 5 checks failing.
 3. On the **Data migration** page, click **Fix destination data**. Back on the run, click **Run check**. All 5 pass.

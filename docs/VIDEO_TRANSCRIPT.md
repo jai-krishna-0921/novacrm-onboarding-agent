@@ -6,7 +6,7 @@ Before recording:
 - dashboard open and logged in: https://13-127-207-21.sslip.io/ui
 - Rocketlane, Slack and Gmail open in other tabs, phone nearby
 - the run emails ready to paste
-- the Mavis database details: host `postgres`, port `5432`, database `mavis_crm`, user `mavis_ro`, password from `mavis-db.txt`
+- the Mavis database details: host `postgres`, port `5432`, database `mavis_crm`, user `mavis_ro`, password `admin`
 
 ---
 
