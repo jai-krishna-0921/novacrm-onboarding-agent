@@ -26,7 +26,7 @@ ALLOWLIST: dict[str, set[str]] = {
     # Project tracking (services/tracking.py): reads tasks, reopens an unverified "Migration verified", appends
     # private notes, posts template progress lines. No project/channel creation, no invites.
     "tracking": {"rocketlane_list_tasks", "rocketlane_set_task_status", "rocketlane_find_task",
-                 "rocketlane_add_task_note", "slack_post_message"},
+                 "rocketlane_add_task_note", "slack_post_internal"},  # customer messages go through Agent 2
 }
 
 
@@ -322,4 +322,11 @@ def build_registry(store: Store, p: Providers, **kw) -> ToolRegistry:
     reg.register("slack_invite_shared", lambda a: p.slack.invite_shared(a.channel_id, a.email),
                  SlackInviteSharedIn, SlackInviteSharedOut, repeat_within=math.inf)
     reg.register("slack_post_message", slack_post, SlackPostIn, Ok, reconcile=slack_posted)
+
+    def slack_post_internal(a: SlackPostIn) -> Ok:
+        # Internal channels only (e.g. #cs-handoffs): refused for any channel that belongs to a customer run.
+        if store.find_run_by_channel(a.channel_id):
+            raise PermanentToolError(f"{a.channel_id} is a customer onboarding channel; internal posts refused")
+        return slack_post(a)
+    reg.register("slack_post_internal", slack_post_internal, SlackPostIn, Ok, reconcile=slack_posted)
     return reg

@@ -35,7 +35,7 @@ deployed system with real Gmail / Retell / Rocketlane / Slack. Evals = real-Clau
 |---|---|---|---|
 | G13 | **Welcome message fact-checked in code**: customer name, tier, duration, CSM model; no prices, dates or invented commitments; one redraft, then a static template. | `guardrails/output.py` `check_welcome`, `graph/comms.py` | `test_welcome_with_invented_date_or_price_is_rejected`, `test_welcome_with_wrong_duration_fails`, `test_bad_llm_welcome_falls_back_to_static_template`; evals: welcome 8/8 |
 | G14 | **Handoff summary fact-checked**: no invented dates, people or prices; must not contradict the migration result or the tier; never posted to the customer-shared channel. | `guardrails/output.py` `check_handoff`, `services/tracking.py` | `tests/test_tracking.py`, `tests/test_tracking_review.py`; evals: handoff 6/6 (Sonnet) |
-| G15 | Nothing internal (Salesforce link, escalations, migration defects, handoff) goes into the customer-shared Slack channel. | `graph/comms.py`, `services/tracking.py` | tracking tests |
+| G15 | Nothing internal (Salesforce link, escalations, migration defects, handoff, prices) goes into the customer-shared Slack channel: only Agent 2 can post there, every update passes `check_customer_message`, and Agent 3's only Slack tool refuses customer channels. | `services/customer_comms.py`, `guardrails/output.py`, `tools/definitions.py` | `test_phase_progress_is_posted_by_the_communication_agent`, `test_internal_post_tool_refuses_any_customer_channel`, `test_customer_message_guard_blocks_internal_content`; live: `make e2e-tracking` 12/12 |
 
 ### Data migration (Priya's "marked done but not verified")
 | # | Guardrail | Where | Proof |

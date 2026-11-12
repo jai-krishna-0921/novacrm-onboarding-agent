@@ -90,7 +90,7 @@ def test_tracking_agent_allowlist_is_minimal_and_other_agents_cannot_reopen_task
     h, rid = ent
     reg = h.deps.registry
     for tool in ("rocketlane_create_project", "slack_create_channel", "slack_invite_shared", "gmail_reply",
-                 "voice_start_call"):
+                 "voice_start_call", "slack_post_message"):  # customer messages belong to Agent 2
         with pytest.raises(ToolNotAllowed):
             reg.call("tracking", tool, {}, run_id=rid)
     for agent in ("intake", "comms", "migration"):
@@ -671,3 +671,38 @@ def test_failed_internal_post_is_retried_on_a_later_sync_exactly_once(ent):
     assert len(internal) == 1 and h.store.get_tracking(rid)["handed_off_at"]
     t.sync(rid)
     assert len(internal) == 1 and rid not in t.due_runs()  # posted once, then no longer tracked
+
+
+
+# ---------------- Agent 2 owns every customer-facing message ----------------
+
+def test_phase_progress_is_posted_by_the_communication_agent(ent):
+    h, rid = ent
+    mark(h, phase="Kickoff")
+    tracker(h).sync(rid)
+    posts = [r for r in h.store.audit_rows if r["run_id"] == rid and r["step"] == "tool:slack_post_message"]
+    assert posts and all(r["agent"] == "comms" for r in posts)
+
+
+def test_internal_post_tool_refuses_any_customer_channel(ent):
+    from app.tools.registry import ToolFailed
+    h, rid = ent
+    customer_channel = h.store.get_run(rid)["slack_channel_id"]
+    with pytest.raises(ToolFailed):
+        h.deps.registry.call("tracking", "slack_post_internal", {"channel_id": customer_channel, "text": "x"},
+                             run_id=rid)
+
+
+@pytest.mark.parametrize("text", ["Migration check failed: duplicates", "Escalated to the CSM",
+                                  "Handoff summary: ...", "Your plan is $48k ARR", "We reopened the task"])
+def test_customer_message_guard_blocks_internal_content(text):
+    from app.guardrails.output import check_customer_message
+    assert check_customer_message(text)
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_customer_message_guard_allows_progress_updates(phase):
+    from app.guardrails.output import check_customer_message
+    from app.services.tracking import progress_update
+    tasks = [{"name": f"t{i}", "phase": p, "completed": i % 2 == 0} for i, p in enumerate(PHASES * 3)]
+    assert check_customer_message(progress_update(phase, tasks)) == []

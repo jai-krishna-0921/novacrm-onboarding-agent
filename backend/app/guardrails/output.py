@@ -113,3 +113,16 @@ def check_handoff(text: str, facts: dict) -> list[str]:
     if people:
         problems.append(f"names people not in the data: {people}")
     return problems
+
+
+# Words that only belong in internal notes. Anything Agent 2 posts into a customer-shared channel is checked.
+INTERNAL_RE = re.compile(r"escalat|migration check|\bfail|defect|duplicate|handoff|reopen|csm note|internal|\barr\b",
+                         re.I)
+
+
+def check_customer_message(text: str) -> list[str]:
+    """Problems that make a message unfit for the customer-shared channel (empty list = OK to post)."""
+    problems = [f"internal wording: {m.group(0)!r}" for m in INTERNAL_RE.finditer(text)]
+    if PRICE_RE.search(text):
+        problems.append("mentions a price")
+    return problems

@@ -24,6 +24,7 @@ from app.llm import versions as prompts
 from app.llm.client import LLMError
 from app.llm.schemas import HandoffDraft
 from app.services.audit import audit
+from app.services.customer_comms import post_customer_update
 from app.services.migration_check import TASK_PREFIX as MIGRATION_VERIFIED
 from app.services.migration_check import MigrationDataUnavailable, run_migration_check
 from app.services.store import Store, now
@@ -191,9 +192,9 @@ class Tracker:
                   rationale=f"{phase} complete; no Slack channel on this run, nothing posted")
             return f"{phase} complete (no Slack channel)"
         try:
-            self.registry.call(AGENT, "slack_post_message", {"channel_id": channel, "text": progress_update(phase, tasks)},
-                               run_id=run["id"], idempotency_key=f"{run['id']}:progress:{phase}",
-                               rationale=f"all {phase} tasks completed; template progress update (once per phase)")
+            post_customer_update(self.store, self.registry, run, progress_update(phase, tasks),
+                                 key=f"{run['id']}:progress:{phase}", requested_by="tracking",
+                                 reason=f"all {phase} tasks completed (once per phase)")
         except ToolFailed as e:
             audit(self.store, run["id"], AGENT, "phase_complete", status="failed",
                   rationale=f"{phase} complete but the Slack post failed: {e}")
@@ -364,7 +365,7 @@ class Tracker:
         text = (f":package: *Handoff to support: {run.get('customer_name')}* ({tier})\n"
                 f"Rocketlane project {run.get('rocketlane_project_id')}\n\n{summary}")
         try:
-            self.registry.call(AGENT, "slack_post_message", {"channel_id": channel, "text": text}, run_id=rid,
+            self.registry.call(AGENT, "slack_post_internal", {"channel_id": channel, "text": text}, run_id=rid,
                                idempotency_key=f"{rid}:handoff-slack",
                                rationale="handoff summary to the internal support channel (not the customer channel)")
         except ToolFailed as e:

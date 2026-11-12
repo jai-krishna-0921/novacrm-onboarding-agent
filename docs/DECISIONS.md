@@ -120,6 +120,18 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 | A dedicated **tester** subagent reviews every feature before it's called done; its defects are fixed with regression tests. | Independent review. |
 | No `Co-Authored-By` or other trailers in commits. | User rule. |
 
+## 11b. Agent boundaries
+
+| Agent | Owns | Cannot |
+|---|---|---|
+| 1 Intake & Routing | understanding the deal, confirming the tier by phone, creating the project | post anything to Slack |
+| 2 Communication | every customer-facing message: channel, topic, invites, welcome, phase progress updates (each checked for internal wording and prices before posting) | decide tier, create projects, change tasks |
+| 3 Project Tracking | watching Rocketlane, migration verification, reopen, handoff | reach a customer channel (it asks Agent 2; its only Slack tool, `slack_post_internal`, refuses any channel that belongs to a customer run) |
+
+Why a separate Communication agent when its first job is "create a channel": agents here are ownership and
+permission boundaries, not separate LLMs. The agent reading untrusted email can't message customers, a Slack
+outage doesn't roll back a project, and one place enforces what customers may be told.
+
 ## 12. Tracking agent (Agent 3) and dashboard
 
 | Decision | Why |
