@@ -47,6 +47,15 @@ def opportunity_id_from_url(url: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+def display_name(name: str | None) -> str:
+    """'nimbus bakery' -> 'Nimbus Bakery'. Only an all-lowercase name is changed (a hurried email); any other
+    casing is the customer's own spelling (eBay, ACME, McDonald's) and is kept. Whitespace is collapsed."""
+    name = " ".join((name or "").split())
+    if not name or name != name.lower() or not any(c.isalpha() for c in name):
+        return name
+    return " ".join(w[:1].upper() + w[1:] for w in name.split(" "))
+
+
 def find_opportunity_url(text: str) -> str | None:
     """The valid Salesforce Opportunity link in the email. Links to two different opportunities (e.g. an
     older deal quoted in a forward) are returned space-joined so validation rejects them rather than

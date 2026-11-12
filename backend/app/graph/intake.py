@@ -6,7 +6,7 @@ from langgraph.types import interrupt
 from app.config import PLACEHOLDER_CSM, PLACEHOLDER_CUSTOMER, PLACEHOLDER_PM, Tier, role_placeholders
 from app.graph.state import Deps, OnboardingState
 from app.guardrails.decision import CallOutcome, CallResult, decide_tier
-from app.guardrails.input import find_opportunity_url, opportunity_id_from_url, validate_deal
+from app.guardrails.input import display_name, find_opportunity_url, opportunity_id_from_url, validate_deal
 from app.llm import versions as prompts
 from app.llm.client import LLMError
 from app.llm.schemas import DealFields, ExtractedDeal, TranscriptReading
@@ -51,6 +51,9 @@ def build_intake(d: Deps):
             return d.escalate(s, AGENT, f"Could not read the deal email (LLM unavailable): {e}", "system")
         rationale = "LLM structured extraction (email treated as untrusted data)"
         deal = ExtractedDeal(**fields.model_dump(), opportunity_url=find_opportunity_url(email["body"]))
+        deal.customer_name = display_name(deal.customer_name) or deal.customer_name
+        if deal.customer_contact_name:
+            deal.customer_contact_name = display_name(deal.customer_contact_name)
         if opp := opportunity_id_from_url(deal.opportunity_url):
             if deal.opportunity_id != opp:
                 rationale += f"; opportunity id taken from the Salesforce link ({deal.opportunity_id!r} -> {opp})"
