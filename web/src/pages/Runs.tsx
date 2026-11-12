@@ -19,7 +19,7 @@ import { MiniPipeline } from "@/components/run/Stepper";
 
 const FILTERS: { value: "all" | Group; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "attn", label: "Needs a human" },
+  { value: "attn", label: "Needs attention" },
   { value: "active", label: "In progress" },
   { value: "done", label: "Done" },
 ];

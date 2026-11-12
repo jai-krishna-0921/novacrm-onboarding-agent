@@ -10,7 +10,25 @@ export const human = (s: unknown) =>
       .replace(/[_:]+/g, " ")
       .trim(),
   );
-export const str = (v: unknown) => (v == null ? "" : typeof v === "string" ? v : JSON.stringify(v));
+/** Drop exception class names and retry tags from backend error text:
+ * "ToolFailed: x failed: permanent: 404: not found" -> "x failed: 404: not found". */
+export function plainError(s: string | null | undefined): string {
+  return String(s ?? "")
+    .replace(/\b[A-Z][A-Za-z]*(?:Error|Failed|Exception): /g, "")
+    .replace(/\b(?:permanent|transient): /g, "");
+}
+
+/** Plain text for any value: arrays as comma lists, objects as "key: value" pairs. Never raw JSON. */
+export function str(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map(str).join(", ");
+  if (typeof v === "object")
+    return Object.entries(v as Record<string, unknown>)
+      .map(([k, x]) => `${human(k)}: ${str(x) || "none"}`)
+      .join("; ");
+  return String(v);
+}
 
 function toDate(iso: string | number | null | undefined): Date | null {
   if (iso == null || iso === "") return null;
@@ -93,16 +111,6 @@ export function lastDays(n: number, today = new Date()): string[] {
     out.push(d.toISOString().slice(0, 10));
   }
   return out;
-}
-
-export function pretty(v: unknown): string {
-  if (v == null) return "null";
-  if (typeof v === "string") return v;
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
 }
 
 /** "in 4m 12s" / "due now". Pure for testing. */

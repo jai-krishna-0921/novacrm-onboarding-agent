@@ -54,5 +54,11 @@ describe("migration problem highlighting", () => {
     expect(
       checkDetail({ check_name: "primary_keys", details: { expected: 0, actual: 2, sample_ids: [12, 31] } }),
     ).toBe("Expected 0, found 2. ids 12, 31");
+    expect(
+      checkDetail({
+        check_name: "schema",
+        details: { expected: ["id", "phone"], actual: { columns: ["id"], extra: null } },
+      }),
+    ).toBe("Expected id, phone, found Columns: id; Extra: none");
   });
 });

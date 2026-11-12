@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
-import { ago, countdown, fmtDateTime, fmtInt, human } from "@/lib/format";
+import { ago, countdown, fmtDateTime, fmtInt, human, plainError } from "@/lib/format";
 import { useAgentsStatus } from "@/lib/queries";
 import type { AgentStatus, AgentsStatus } from "@/lib/schemas";
 import { Badge, TipBadge } from "@/components/ui/badge";
@@ -124,7 +124,7 @@ function AgentCard({ a }: { a: AgentStatus }) {
       </div>
       <div className="mt-3 border-t border-line px-5 py-3">
         <div className="text-[12.5px] text-ink-3">Last activity</div>
-        <div className="mt-0.5 text-sm text-ink">{a.last_activity || "No activity yet"}</div>
+        <div className="mt-0.5 text-sm text-ink">{plainError(a.last_activity) || "No activity yet"}</div>
         {a.last_activity_at ? (
           <Tip content={fmtDateTime(a.last_activity_at)}>
             <span tabIndex={0} className="text-[12.5px] text-ink-3">

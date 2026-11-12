@@ -73,7 +73,7 @@ def build_intake(d: Deps):
                     status="escalated")
             return d.escalate(s, AGENT, f"Email announces {fields.deal_count} deals; needs a human to split", "input")
         d.audit(s, AGENT, "validate", "all required fields present and valid" if not issues
-                else f"cannot proceed: {issues}", output={"issues": issues},
+                else "cannot proceed: " + "; ".join(issues), output={"issues": issues},
                 status="ok" if not issues else "blocked")
         return {"issues": issues}
 

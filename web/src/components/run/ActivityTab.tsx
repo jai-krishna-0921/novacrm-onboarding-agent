@@ -3,12 +3,13 @@ import { AlertTriangle, Check, ChevronRight, Circle, Minus, Phone, Wrench, X } f
 import { useMemo, useState } from "react";
 import { describe, parseTranscript, speakerRole, type FeedTone } from "@/lib/activity";
 import { cn } from "@/lib/cn";
-import { fmtDateTime, fmtTime } from "@/lib/format";
+import { fmtDateTime, fmtTime, plainError } from "@/lib/format";
 import { getPref, setPref } from "@/lib/prefs";
 import type { AuditRow } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { CodeBlock, KeyValues, Mono } from "@/components/ui/misc";
+import { DataView } from "@/components/ui/data-view";
+import { KeyValues, Mono } from "@/components/ui/misc";
 import { clampPage, Pagination, usePaging } from "@/components/ui/pagination";
 import { Tip } from "@/components/ui/tooltip";
 
@@ -110,11 +111,11 @@ function FeedItem({
   latestDecision: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const why = row.rationale && row.rationale !== "tool call succeeded" ? row.rationale : "";
+  const why = row.rationale && row.rationale !== "tool call succeeded" ? plainError(row.rationale) : "";
   const input = row.input && typeof row.input === "object" ? (row.input as Record<string, unknown>) : null;
   const transcript = row.step === "decide_tier" ? parseTranscript(input?.transcript) : [];
   const I = ICON[d.tone];
-  const inputShown = input && "transcript" in input ? { ...input, transcript: "(shown above)" } : row.input;
+  const inputShown = input && "transcript" in input ? { ...input, transcript: "Shown above" } : row.input;
   return (
     <li className="relative grid grid-cols-[28px_1fr] gap-x-3 pb-4">
       {!last ? <span aria-hidden className="absolute top-7 bottom-0 left-[13.5px] w-px bg-line" /> : null}
@@ -163,13 +164,13 @@ function FeedItem({
             {row.input != null ? (
               <div>
                 <div className="mb-1 text-[12.5px] font-medium text-ink-3">Input</div>
-                <CodeBlock value={inputShown} />
+                <DataView value={inputShown} />
               </div>
             ) : null}
             {row.output != null ? (
               <div>
                 <div className="mb-1 text-[12.5px] font-medium text-ink-3">Output</div>
-                <CodeBlock value={row.output} />
+                <DataView value={row.output} />
               </div>
             ) : null}
           </C.Content>

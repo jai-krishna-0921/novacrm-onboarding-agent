@@ -1,5 +1,5 @@
 import type { AuditRow, Escalation, Pending, Run, Tracking } from "./schemas";
-import { ago, cap, fmtTime, human, str } from "./format";
+import { ago, cap, fmtTime, human, plainError, str } from "./format";
 
 // Mirrors backend/app/graph/root.py ALLOWED (the API re-validates every resolution).
 export const ALLOWED: Record<string, string[]> = {
@@ -251,7 +251,7 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
   if (done[6]) steps[6].sub = "Handed off to support";
 
   const pct = trackingPct(tr);
-  const reason = esc?.reason || pending?.reason || lastAudit(audit, "escalate")?.rationale || "";
+  const reason = plainError(esc?.reason || pending?.reason || lastAudit(audit, "escalate")?.rationale || "");
   let tone: Tone = "active";
   let title = "Working on it";
   let sub = "";
@@ -282,6 +282,7 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
       if (kind === "tier" && cur === 2)
         c.sub = `No answer after ${decisions.length || "several"} ${decisions.length === 1 ? "try" : "tries"}`;
       else if (kind === "tier") c.sub = "Tier unclear on the call";
+      else if (kind === "input" && cur === 2) c.sub = "AE not found in the directory";
       else c.sub = kindLabel(kind);
     }
   } else if (status === "AWAITING_CLARIFICATION") {
@@ -290,7 +291,7 @@ export function deriveRun(run: Run, d: Detail, openEscs: Escalation[] = []): Run
     const issues = obj(lastAudit(audit, "validate")?.output).issues;
     sub =
       Array.isArray(issues) && issues.length
-        ? `Missing or invalid: ${issues.map(str).join(", ")}`
+        ? `Missing or invalid: ${issues.map((x) => human(str(x))).join(", ")}`
         : "The AE was emailed. The run continues when they reply.";
     if (c) Object.assign(c, { state: "warn", sub: "Asked AE for details" });
   } else if (onCall) {

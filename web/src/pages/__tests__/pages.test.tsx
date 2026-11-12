@@ -6,10 +6,10 @@ import { server } from "@/mocks/server";
 import { renderApp } from "@/test/render";
 
 describe("pages against the mock API", () => {
-  it("runs list shows customers and the needs-a-human count", async () => {
+  it("runs list shows customers and the needs-attention count", async () => {
     renderApp("/runs");
     expect(await screen.findByText("Larkspur Health")).toBeInTheDocument();
-    const attn = screen.getByRole("tab", { name: /Needs a human/ });
+    const attn = screen.getByRole("tab", { name: /Needs attention/ });
     expect(within(attn).getByText(/\d+/)).toBeInTheDocument();
   });
 

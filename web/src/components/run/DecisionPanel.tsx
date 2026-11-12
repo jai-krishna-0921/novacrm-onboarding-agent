@@ -3,7 +3,7 @@ import { PhoneCall, RotateCcw, ShieldCheck, XCircle } from "lucide-react";
 import { useState } from "react";
 import { api, enc } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { cap, fmtTime } from "@/lib/format";
+import { cap, fmtTime, plainError } from "@/lib/format";
 import { getPref, setPref } from "@/lib/prefs";
 import { post, qk } from "@/lib/queries";
 import { ALLOWED, KIND, TIERS } from "@/lib/run-state";
@@ -64,7 +64,9 @@ export function DecisionPanels({
               <h2 className="mt-2 text-[16px] font-semibold text-ink">
                 {e.kind === "migration" ? "Migration data needs a look" : "Needs your decision"}
               </h2>
-              <p className="mt-1.5 text-sm break-words whitespace-pre-wrap text-ink-2">{e.reason}</p>
+              <p className="mt-1.5 text-sm break-words whitespace-pre-wrap text-ink-2">
+                {plainError(e.reason)}
+              </p>
               <p className="mt-2 text-[12.5px] text-ink-3">
                 Raised {fmtTime(e.created_at, true)} by the {e.agent ? `${e.agent} agent` : "agent"}.{" "}
                 {KIND[e.kind ?? ""]?.explain}

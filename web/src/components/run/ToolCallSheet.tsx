@@ -5,7 +5,8 @@ import { useToolCall } from "@/lib/queries";
 import type { ToolCallRow } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { ErrorBox } from "@/components/ui/empty-state";
-import { CodeBlock, KeyValues, Mono } from "@/components/ui/misc";
+import { DataView } from "@/components/ui/data-view";
+import { KeyValues, Mono } from "@/components/ui/misc";
 import { Sheet } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -63,11 +64,11 @@ export function ToolCallSheet({
             <>
               <div>
                 <div className="mb-1 text-[13px] font-medium text-ink-3">Input</div>
-                <CodeBlock value={detail.data?.args ?? null} />
+                <DataView value={detail.data?.args ?? null} />
               </div>
               <div>
                 <div className="mb-1 text-[13px] font-medium text-ink-3">Output</div>
-                <CodeBlock value={detail.data?.result ?? null} />
+                <DataView value={detail.data?.result ?? null} />
               </div>
               <p className="text-[12.5px] text-ink-3">
                 Phone numbers are masked to the last 4 digits. Secrets are redacted.

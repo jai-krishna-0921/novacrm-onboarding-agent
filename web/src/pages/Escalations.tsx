@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowRight, CheckCircle2 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router";
 import { cn } from "@/lib/cn";
-import { ago, fmtDateTime } from "@/lib/format";
+import { ago, fmtDateTime, plainError } from "@/lib/format";
 import { useEscalations, useRun, useRuns } from "@/lib/queries";
 import { deriveRun, runName } from "@/lib/run-state";
 import type { Escalation, Run } from "@/lib/schemas";
@@ -97,7 +97,9 @@ function EscalationRow({ e, run, current }: { e: Escalation; run?: Run; current:
               <span className="text-[12.5px] text-ink-3">Raised {ago(e.created_at)}</span>
             </Tip>
           </span>
-          <span className="mt-1 line-clamp-2 block text-sm break-words text-ink-2">{e.reason}</span>
+          <span className="mt-1 line-clamp-2 block text-sm break-words text-ink-2">
+            {plainError(e.reason)}
+          </span>
         </span>
         <span className="hidden items-center gap-1 self-center text-sm font-medium text-accent sm:inline-flex">
           Decide

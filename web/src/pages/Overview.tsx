@@ -2,7 +2,7 @@ import { ArrowRight, Activity } from "lucide-react";
 import { Link } from "react-router";
 import { llmDayTooltip, runsDayTooltip, statusBarTooltip } from "@/lib/chart-tooltip";
 import { cn } from "@/lib/cn";
-import { ago, fmtDur, fmtInt, fmtUsd, lastDays, shortDay } from "@/lib/format";
+import { ago, fmtDur, fmtInt, fmtUsd, lastDays, plainError, shortDay } from "@/lib/format";
 import {
   useAgentsStatus,
   useEscalations,
@@ -258,7 +258,7 @@ function AgentsStrip() {
         agents.map((a) => (
           <Tip
             key={a.id}
-            content={`${a.last_activity || "No activity yet"}${a.last_activity_at ? `, ${ago(a.last_activity_at)}` : ""}`}
+            content={`${plainError(a.last_activity) || "No activity yet"}${a.last_activity_at ? `, ${ago(a.last_activity_at)}` : ""}`}
           >
             <span tabIndex={0} className="flex items-center gap-2 text-sm text-ink-2">
               <AgentDot status={a.status} />

@@ -351,7 +351,7 @@ function Cell({ col, value }: { col: string; value: unknown }) {
   if (col === "id")
     return (
       <Td className="font-mono text-[13px] text-ink-2">
-        {value == null ? <span className="text-bad">null</span> : str(value)}
+        {value == null ? <span className="font-sans text-bad italic">Missing</span> : str(value)}
       </Td>
     );
   const text = str(value).trim();
