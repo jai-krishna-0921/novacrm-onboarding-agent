@@ -27,6 +27,8 @@ make test             # pytest, fake providers + fake LLM, no network, < 10 s
 make eval             # LLM evals against real Claude (costs tokens), exits non-zero under threshold
 make simulate SCENARIO=<name>   # full graph, PROVIDER_MODE=fake
 make lint             # ruff + mypy
+make web-build / web-test / web-lint / web-dev   # dashboard (web/)
+make check            # backend tests + web lint/test/build
 make api              # uvicorn on :8000 (PROVIDER_MODE from .env)
 make env-check        # which settings are set (never prints values)
 make preflight        # read-only checks of Postgres, Rocketlane, Anthropic, Retell, Slack, Gmail, tunnel
@@ -53,7 +55,7 @@ Other read-only helper: `cd backend && uv run python -m scripts.rl_inspect` (Roc
 - Real calls, real emails, real Slack/Rocketlane writes only when the user asks; default to fake mode.
 
 ### Layout
-`backend/app/{graph,tools,providers/{real,fake},llm,guardrails,services,db,api}`, `backend/{tests,evals,scripts}`, `web/` (later). See plan §4.
+`backend/app/{graph,tools,providers/{real,fake},llm,guardrails,services,db,api}`, `backend/{tests,evals,scripts}`, `web/` (the dashboard: React + Vite + TS, built to `web/dist`, served by FastAPI at `/ui`; `make web-build`, `make check`). See plan §4.
 
 ---
 

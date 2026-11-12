@@ -1,6 +1,5 @@
 """In-app login (replaces Caddy basic auth): every guard is proven by the request it BLOCKS."""
 
-import re
 import time
 
 import pytest
@@ -135,8 +134,8 @@ def test_forged_cookie_is_rejected(settings):
     assert c.get("/runs").status_code == 401
 
 
-@pytest.mark.parametrize("path", ["/healthz", "/ui/login", "/ui/assets/app.css", "/ui/assets/login.js",
-                                  "/ui/assets/favicon.svg"])
+@pytest.mark.parametrize("path", ["/healthz", "/ui/login", "/ui/assets/index-test.js",
+                                  "/ui/assets/favicon-test.svg"])
 def test_public_paths_stay_public(settings, path):
     assert make(settings).get(path).status_code == 200
 
@@ -246,26 +245,10 @@ def test_auth_disabled_only_for_the_fake_test_suite(settings):
     assert make(settings, auth_disabled=True).get("/runs").status_code == 200
 
 
-# ---------- static pages ----------
-def test_login_page_is_self_contained_and_never_parses_html(settings):
-    c = make(settings)
-    html = c.get("/ui/login").text
-    assert "<form" in html and 'type="password"' in html and "NovaCRM Onboarding" in html
-    refs = re.findall(r'(?:src|href)="([^"]+)"', html)
-    for ref in refs:
-        assert ref.startswith("/ui/assets/") or ref.startswith("#"), ref
-        assert c.get(ref).status_code == 200, ref
-    assert "http://" not in html and "https://" not in html
-    js = c.get("/ui/assets/login.js").text
-    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
-        assert sink not in js, sink
-
-
-def test_dashboard_js_redirects_to_login_on_401(settings):
-    c = make(settings)
-    login(c)
-    js = c.get("/ui/assets/app.js").text
-    assert "401" in js and "/ui/login" in js and "/auth/logout" in js
+# ---------- dashboard pages (the React build; serving details in test_dashboard.py) ----------
+def test_login_page_is_the_dashboard_app_served_without_a_session(settings):
+    r = make(settings).get("/ui/login")
+    assert r.status_code == 200 and '<div id="root"></div>' in r.text
 
 
 def test_failed_logins_do_not_leak_which_field_was_wrong(settings):

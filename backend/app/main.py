@@ -14,8 +14,7 @@ from fastapi import Path as FastPath
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -48,7 +47,10 @@ CURSOR = "gmail_history_id"
 RECONCILE_AFTER = 180       # seconds without a webhook before we ask Retell directly
 CALL_RESULT_TIMEOUT = 900   # seconds after which a call with no usable result counts as a failed attempt
 MIGRATION_CHECK_REUSE_SECONDS = 60  # an identical re-check this soon is a double click: return the first batch
-STATIC = Path(__file__).parent / "static"
+ASSET_CACHE = "public, max-age=31536000, immutable"  # Vite puts a content hash in every asset file name
+NOT_BUILT = ("<!doctype html><meta charset=utf-8><title>Dashboard not built</title>"
+             "<h1>Frontend not built</h1><p>Run <code>cd web &amp;&amp; npm ci &amp;&amp; npm run build</code> "
+             "(or <code>make web-build</code>), or point WEB_DIST_DIR at a build.</p>")
 
 
 class Dismissal(BaseModel):
@@ -287,7 +289,20 @@ def create_app(c: Container | None = None) -> FastAPI:
                        allow_headers=["*"])
     auth = Auth(lambda: container().settings)
     app.middleware("http")(auth.guard)  # login + same-origin check on everything but webhooks/healthz/login
-    app.include_router(auth.router(lambda: FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-cache"})))
+
+    # ---------- dashboard UI: the React build (web/dist), same-origin; the login guard in app/auth.py covers it ----
+    def dist() -> Path:
+        return Path(container().settings.web_dist_dir)
+
+    def spa_index() -> Response:
+        """Every dashboard page is the SPA's index.html (client-side routes); revalidated so new builds reach
+        browsers at once. No build: a clear 503 page instead of a crash."""
+        index = dist() / "index.html"
+        if not index.is_file():
+            return HTMLResponse(NOT_BUILT, status_code=503, headers={"Cache-Control": "no-store"})
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
+
+    app.include_router(auth.router(spa_index))
 
     # ---------- webhooks ----------
     @app.post("/webhooks/gmail")
@@ -634,16 +649,22 @@ def create_app(c: Container | None = None) -> FastAPI:
         """Restore the planted defects (duplicate id 23, missing email on id 17)."""
         return demo_write("reset", request, lambda source, dest: demo_contacts()[1])
 
-    # ---------- dashboard UI (static, same-origin; the login guard in app/auth.py covers it) ----------
-    @app.get("/ui", include_in_schema=False)
-    def ui():
-        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
-
     @app.get("/ui/config", include_in_schema=False)
     def ui_config():
         return {"rocketlane_app_url": container().settings.rocketlane_app_url.rstrip("/")}
 
-    app.mount("/ui/assets", StaticFiles(directory=STATIC), name="ui-assets")
+    @app.get("/ui/assets/{name:path}", include_in_schema=False)
+    def ui_asset(name: str):
+        base = (dist() / "assets").resolve()
+        f = (base / name).resolve()
+        if not f.is_relative_to(base) or not f.is_file():  # no traversal out of assets/, no SPA fallback here
+            raise HTTPException(404, "not found")
+        return FileResponse(f, headers={"Cache-Control": ASSET_CACHE})
+
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/{page:path}", include_in_schema=False)
+    def ui(page: str = ""):
+        return spa_index()
 
     return app
 

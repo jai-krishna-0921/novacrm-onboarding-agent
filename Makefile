@@ -1,5 +1,6 @@
-.PHONY: up down migrate seed test eval simulate lint api e2e-tracking
+.PHONY: up down migrate seed test eval simulate lint api e2e-tracking web-install web-dev web-build web-test web-lint check
 BE := cd backend &&
+WEB := cd web &&
 
 up:        ; docker compose up -d --wait
 down:      ; docker compose down
@@ -15,3 +16,11 @@ preflight: ; $(BE) uv run python -m scripts.preflight
 gmail-auth: ; $(BE) uv run python -m scripts.gmail_auth
 retell-setup: ; $(BE) uv run python -m scripts.retell_setup $(ARGS)
 e2e-tracking: ; $(BE) uv run python -m scripts.e2e_tracking
+
+# Dashboard (web/: React + Vite, served by the API at /ui from web/dist)
+web-install: ; $(WEB) npm ci
+web-dev:   ; $(WEB) npm run dev     # :5173/ui/, proxies the API to make api on :8000
+web-build: ; $(WEB) npm run build   # -> web/dist (what /ui serves)
+web-test:  ; $(WEB) npm run test
+web-lint:  ; $(WEB) npm run lint
+check: test web-lint web-test web-build   # everything offline: backend tests + dashboard lint/test/build

@@ -45,7 +45,10 @@ make simulate SCENARIO=all      # 10 mock end-to-end runs (happy, no-answer, API
 make eval                       # real-Claude evals: extraction, transcripts (false-confirmed must be 0), welcome
 make preflight                  # read-only checks of every integration
 make e2e-tracking               # live: throwaway Rocketlane project + Slack channels, ticks tasks, asserts Agent 3, cleans up
-make api                        # FastAPI on :8000 (PROVIDER_MODE=fake|real)
+make web-install web-build      # dashboard (web/, React + Vite) -> web/dist
+make api                        # FastAPI on :8000 (PROVIDER_MODE=fake|real); dashboard at http://127.0.0.1:8000/ui
+make web-dev                    # dashboard dev server with hot reload on :5173/ui/ (proxies the API on :8000)
+make check                      # backend tests + dashboard lint, tests and build
 ```
 Setup guides: `docs/ROCKETLANE_SETUP.md`, `docs/CONNECTIONS.md`. Verified API notes: `docs/reference/`.
 Why it's built this way: `docs/DECISIONS.md`. Every guardrail and the test that proves it: `docs/GUARDRAILS.md`.
@@ -56,6 +59,7 @@ Every defect found and how it was fixed: `docs/ISSUES.md`. Deploy (AWS EC2): `de
 - `backend/app/guardrails`: pure decision code (input validation, tier decision, output checks)
 - `backend/app/tools`: tool registry and contracts
 - `backend/app/providers/{real,fake}`: Rocketlane, Retell, Slack, Gmail clients and their scripted fakes
-- `backend/app/main.py`: webhooks and the run/escalation API
+- `backend/app/main.py`: webhooks, the run/escalation API, and serving the dashboard build at `/ui`
+- `web/`: the ops dashboard (React + Vite + TypeScript); see `web/README.md`
 - `backend/evals`: labelled datasets and the eval runner
 - `docs/`: requirements analysis, implementation plan, setup guides

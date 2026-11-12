@@ -1,8 +1,11 @@
 import os
+from pathlib import Path
 
 import pytest
 
 from app.config import Settings
+
+WEB_DIST = Path(__file__).parent / "fixtures" / "web_dist"
 
 
 @pytest.fixture
@@ -19,6 +22,7 @@ def settings() -> Settings:
         call_max_attempts=3,
         call_retry_delay_seconds=0,
         auth_disabled=True,  # the login guard has its own tests (test_auth.py) with it enabled
+        web_dist_dir=str(WEB_DIST),  # a stand-in for `npm run build`: tests never depend on web/dist existing
     )
 
 

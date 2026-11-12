@@ -1,7 +1,7 @@
 """In-app login for the dashboard and its API (replaces Caddy basic auth).
 
 One admin account from settings. A login sets a signed, HttpOnly, SameSite=Strict session cookie (12 h). Every
-route except webhooks, /healthz, the login page/assets and /auth/login needs it. State-changing requests also need
+route except webhooks, /healthz, the login page, /ui/assets/* and /auth/login needs it. State-changing requests also need
 a same-origin Origin/Referer (CSRF defence on top of SameSite). Failed logins are rate limited per client IP, in
 memory. Without ADMIN_PASSWORD nothing protected is served (503): the app never falls open.
 """
@@ -154,7 +154,8 @@ class Auth:
             return JSONResponse({"detail": "login is not configured (set ADMIN_PASSWORD)"}, status_code=503)
         user = self.verify(request.cookies.get(COOKIE))
         if user is None:
-            if request.method == "GET" and path == "/ui":  # the page; /ui/config etc. are API calls
+            if request.method == "GET" and (path == "/ui" or path.startswith("/ui/")) and path != "/ui/config":
+                # a dashboard page (SPA route); /ui/config is an API call and gets the 401 below
                 target = path + (f"?{request.url.query}" if request.url.query else "")
                 return RedirectResponse(f"/ui/login?next={quote(safe_next(target), safe='/')}", status_code=303)
             return JSONResponse({"detail": "not signed in"}, status_code=401)

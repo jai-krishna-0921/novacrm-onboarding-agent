@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator, model_validator
@@ -74,6 +75,8 @@ class Settings(BaseSettings):
     session_secret: str = ""     # empty: random per process (sessions reset on restart)
     trust_proxy: bool = False    # true only behind Caddy: client IP/scheme come from X-Forwarded-For/-Proto
     auth_disabled: bool = False  # test suite only; ignored when PROVIDER_MODE=real
+    # Built React dashboard (web/, `npm run build`), served at /ui. The Docker image sets /app/web_dist.
+    web_dist_dir: str = str(Path(__file__).resolve().parents[2] / "web" / "dist")
     # Dashboard buttons that repair / re-break the migration demo destination. Also refused unless MIG_DEST_URL's
     # database is named mig_dest, so they can never write to a real customer database.
     migration_demo_controls: bool = True

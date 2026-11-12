@@ -14,7 +14,7 @@ DOMAIN="${IP//./-}.sslip.io"
 "${SSH[@]}" 'until [ -f /var/lib/cloud/novacrm-ready ]; do echo "waiting for first boot..."; sleep 5; done'
 
 # Code: only what is committed (no .env, no local junk).
-git -C "$ROOT" archive --format=tar HEAD backend deploy | "${SSH[@]}" 'mkdir -p /opt/novacrm/src && rm -rf /opt/novacrm/src/* && tar -x -C /opt/novacrm/src'
+git -C "$ROOT" archive --format=tar HEAD backend web deploy .dockerignore | "${SSH[@]}" 'mkdir -p /opt/novacrm/src && rm -rf /opt/novacrm/src/* && tar -x -C /opt/novacrm/src'
 # Secrets: copied, never echoed.
 scp -q -i "$KEY" "$ROOT/.env" ec2-user@"$IP":/opt/novacrm/app.env
 "${SSH[@]}" 'chmod 600 /opt/novacrm/app.env'
@@ -29,7 +29,7 @@ if [ ! -f .env ]; then
   printf "POSTGRES_PASSWORD=%s\nDOMAIN=%s\n" "$(openssl rand -hex 24)" "$DOMAIN" > .env
   echo "generated postgres password"
 fi
-docker build -q -t novacrm-api:latest src/backend
+docker build -q -t novacrm-api:latest -f src/backend/Dockerfile src  # context: backend/ + web/ (dashboard build stage)
 docker compose up -d --remove-orphans
 docker image prune -f >/dev/null
 for i in $(seq 1 60); do

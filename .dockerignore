@@ -1,0 +1,16 @@
+# Context of `docker build -f backend/Dockerfile .` (repo root). Allowlist: only backend/ and web/ are sent.
+*
+!backend
+!web
+**/.env
+**/.env.*
+**/__pycache__
+**/node_modules
+backend/.venv
+backend/.pytest_cache
+backend/.mypy_cache
+backend/.ruff_cache
+backend/evals/results
+backend/tests
+web/dist
+web/.vite
