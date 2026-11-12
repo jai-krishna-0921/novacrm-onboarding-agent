@@ -5,156 +5,131 @@ Read it as written. **[Brackets]** are actions, not speech. Slide numbers match 
 Before recording:
 - dashboard open and logged in: https://13-127-207-21.sslip.io/ui
 - Rocketlane, Slack and Gmail open in other tabs, phone nearby
-- the Mavis database details file open
-- the run emails ready to paste (in your notes: Mavis Analytics, Pied Piper, Hooli)
+- the run emails ready to paste
+- the Mavis database details: host `postgres`, port `5432`, database `mavis_crm`, user `mavis_ro`, password from `mavis-db.txt`
 
 ---
 
 ## 1. Intro (30 s)
 
-Hi, I’m Jai Krishna. For this assignment I built an **agentic, multi-agent system** that runs NovaCRM’s customer onboarding end to end.
+Hi, I’m Jai Krishna. For this assignment, I built an agentic, multi-agent system that runs NovaCRM’s customer onboarding from end to end.
 
-A closed-deal email comes in. The system confirms the plan with the AE on a real phone call, creates the Rocketlane project from the right template, opens a personalised Slack channel, and tracks the project until it’s handed to support.
+When a closed-deal email arrives, the system calls the account executive to confirm the plan, creates the Rocketlane project from the right template, opens a personalised Slack channel, and tracks the project until the customer is handed over to support.
 
-It’s all live on AWS, with real Gmail, Retell, Rocketlane and Slack. And I went beyond the brief: the agents also verify the customer’s data migration against their own database.
+Everything you will see is live on AWS and uses real Gmail, Retell, Rocketlane and Slack. I also went beyond the brief, because the agents verify the customer’s data migration against the customer’s own database.
 
 ## 2. The problem (30 s)
 
-Today this is manual, and it breaks in four places:
-- messy deal emails;
-- an unclear plan tier, so the wrong template gets used;
-- manual setup, so steps get missed;
-- migration marked done without a real check.
+Today, this process is manual, and it breaks in four places.
 
-Each of these is now handled by an agent, with guardrails.
+Deal emails are messy. The plan tier is often unclear, so the wrong template gets used. The setup is done by hand, so steps get missed. And the data migration is marked as done without anyone checking it.
+
+In my system, each of these problems is handled by an agent, and every agent works inside guardrails.
 
 ## 3. Architecture (1 min)
 
-1. Gmail pushes the deal email to FastAPI, which starts a **LangGraph** run.
-2. LangGraph holds the three agents and checkpoints every step in Postgres. So a run can pause for the phone call or for a human, resume exactly where it stopped, and survive a crash without repeating work.
-3. Agents never touch an external service directly. Everything goes through one **tool registry**, which calls Retell, Rocketlane, Slack and Gmail.
-4. The React dashboard reads the same database. It all runs on AWS with Docker and HTTPS.
+When a deal email arrives, Gmail pushes it to my FastAPI service, which starts a LangGraph run.
 
-**Model choice:** Claude **Haiku** for extraction, transcript reading and drafting, because on my evals it matched Sonnet at about a seventh of the cost. **Sonnet** only writes the handoff summary.
+LangGraph coordinates the three agents and saves a checkpoint after every step in Postgres. This means a run can pause while it waits for the phone call or for a human decision, and then resume exactly where it stopped. It also means a crash never causes a step to run twice.
+
+The agents never call an external service directly. Every action goes through a single tool registry, which talks to Retell, Rocketlane, Slack and Gmail. The React dashboard reads from the same database, and the whole system runs on AWS with Docker and HTTPS.
+
+For the models, I use Claude Haiku for extraction, for reading the call transcript, and for drafting messages. On my evaluations, Haiku matched Sonnet’s accuracy at about one seventh of the cost. I use Sonnet only for the handoff summary, because that task needs longer reasoning.
 
 ## 4. The agents (1 min)
 
-Three agents, each agentic within its own lane, each with a hard boundary.
+The system has three agents. Each one acts on its own within its area, and each one has a hard boundary.
 
-- **Intake and Routing** reads the email, calls the AE and creates the project. It can never post to Slack or guess a tier.
-- **Communication** owns every customer-facing message. It can’t touch the project or the tier.
-- **Project Tracking** watches Rocketlane after setup. It can’t write to the customer itself; it asks the Communication agent to.
+The Intake and Routing agent reads the email, calls the AE, and creates the project. It can never post to Slack, and it can never guess a tier.
 
-So the agent that reads untrusted email can never message a customer. The rule throughout: **the LLM reads and drafts, code decides, and anything unclear goes to a human.**
+The Communication agent owns every message that the customer sees. It cannot change the project or the tier.
 
-## 5. Flow 1: email to project (1 min)
+The Project Tracking agent watches Rocketlane after the setup is done. It cannot write to the customer directly, so it asks the Communication agent to post for it.
 
-Four gates, and every “no” goes somewhere safe:
-1. **Known AE with a valid DMARC signature?** If not, a human reviews it. Spoofed mail is stopped before any AI call.
-2. **All fields valid?** If not, the agent emails the AE exactly what’s missing and creates nothing.
-3. **A new deal?** A duplicate check runs before the call and again before the create.
-4. **Tier confirmed?** Three signals must agree:
-   - Retell’s call analysis;
-   - the AE saying “yes” to the read-back;
-   - my own LLM reading of the transcript.
+Because of this split, the agent that reads untrusted email can never message a customer. The rule throughout the system is that the language model reads and drafts, the code makes every decision, and anything unclear goes to a human.
 
-   If they don’t, it retries up to three calls, then goes to a human. It never defaults a tier.
+## 5. Flow 1: from email to project (1 min)
 
-When all four pass: Enterprise gets the 30-day template with a dedicated CSM, and Growth gets the 14-day template with a pooled CSM.
+The intake flow has four checks, and every failed check leads somewhere safe.
+
+First, the system checks that the sender is a known AE and that the email passes Gmail’s DMARC check. If it does not, a human reviews it, and no AI call is ever made.
+
+Second, it checks that all required fields are present and valid. If something is missing, the agent emails the AE with exactly what is missing, and nothing is created.
+
+Third, it checks that the deal is new. The duplicate check runs before the call and again before the project is created.
+
+Fourth, it checks that the tier is confirmed. Three signals must agree: Retell’s call analysis, the AE saying yes when the plan is read back, and my own language model reading of the transcript. If they do not agree, the system calls again, up to three times, and then hands the run to a human. It never picks a tier by default.
+
+When all four checks pass, an Enterprise deal gets the 30-day template with a dedicated CSM, and a Growth deal gets the 14-day template with a pooled CSM.
 
 ## 6. Flow 2: tracking (40 s)
 
-Agent 3 hears about task changes through a Rocketlane webhook and also polls every 15 seconds.
-- A phase starts or ends: the customer gets an update.
-- The import is done: it runs the migration checks.
-- “Migration verified” is ticked without a passing check: it reopens the task.
-- Something is marked Blocked: the team is flagged internally.
-- Go-Live is complete: it writes the handoff summary.
+The tracking agent hears about task changes through a Rocketlane webhook, and it also checks every project every 15 seconds.
 
-Overdue tasks use Rocketlane’s own automation (1 day goes to the PM, 4 days to the owner), so they’re handled even if my service is down.
+When a phase starts or finishes, the customer receives an update in Slack. When the data import is done, the agent runs the migration checks. If someone ticks “Migration verified” without a passing check, the agent reopens the task. If a task is marked Blocked, the team is warned internally. When Go-Live is complete, the agent writes the handoff summary.
 
-## 7. Tools, guardrails, idempotency (1 min 15 s)
+Overdue tasks are handled by Rocketlane’s own automation. A task that is one day overdue notifies the project manager, and a task that is four days overdue notifies the project owner. This keeps working even if my service is down.
 
-Every action passes through the tool registry: an allowlist per agent, schema validation, an **idempotency key reserved before the side effect**, safe retries, and an audit row.
+## 7. Tools, guardrails and idempotency (1 min 15 s)
 
-Idempotency matters because an API can time out *after* it did the work. My retries look up whether the action already happened before acting again. So it’s one call per attempt, one project, one channel and one welcome. A chaos test proves this, with up to 30 percent injected failures across 120 deals.
+Every action goes through the tool registry. The registry checks that the agent is allowed to use the tool, validates the input, reserves an idempotency key before anything happens, retries safely, and writes an audit record.
 
-The guardrails:
-- no confirmed tier, no project;
-- a sender check;
-- emails treated as data, never as instructions, against prompt injection;
-- duplicate checks;
-- customer messages fact-checked, so nothing internal leaks;
-- everything audited, with phone numbers masked.
+Idempotency matters because an API can time out after it has already done the work. Before retrying, my system checks whether the action already happened. As a result, each attempt makes exactly one call, and each run creates exactly one project, one channel and one welcome message. I proved this with a chaos test that injects up to 30 percent failures across 120 deals.
 
-**Evals on real Claude:**
-- extraction: 34 out of 34;
-- call transcripts: 31 out of 31, with **zero false confirmations**;
-- welcome messages: 8 out of 8;
-- handoff summaries: 6 out of 6.
+The guardrails are as follows. There is no project without a confirmed tier. The sender is verified before anything runs. Emails are treated as data and never as instructions, which protects against prompt injection. Duplicates are blocked. Every customer message is fact-checked, so nothing internal leaks. Everything is audited, and phone numbers are masked.
 
-Plus over 900 automated tests.
+I evaluated the prompts against real Claude. Extraction scored 34 out of 34. Call transcripts scored 31 out of 31, with zero false confirmations. Welcome messages scored 8 out of 8, and handoff summaries scored 6 out of 6. The system also has more than 900 automated tests.
 
 ## 8. Data migration (40 s)
 
-This one goes beyond the brief. The CSM connects the customer’s database in the dashboard with a read-only user. The connection is tested first, and the password is encrypted and never shown again.
+This part goes beyond the brief. The CSM connects the customer’s database in the dashboard by using a read-only user. The system tests the connection first, then encrypts the password and never shows it again.
 
-Agent 3 then runs five checks against what landed in NovaCRM: row count, every id copied, no duplicates, required fields filled, and no dropped columns. A pass puts the evidence on the task. A fail escalates, and a premature tick gets reopened.
+The tracking agent then runs five checks against the data that landed in NovaCRM. It checks the row count, confirms that every record was copied, looks for duplicates, confirms that the required fields are filled, and makes sure no column was dropped. If the checks pass, the evidence is attached to the task. If they fail, the CSM is alerted, and a task that was ticked too early is reopened.
 
-## 9. Live demo (about 6 min; speak only the lines below)
+## 9. Live demo (about 6 min; say only these lines)
 
-**Positive run.** [Agents page.] All three agents are healthy.
+**Positive run.**
 
-[Send the Mavis Analytics email.] The run starts from the Gmail push, and the sender and fields pass.
+[Agents page.] All three agents are running and healthy.
 
-[Answer the call: “Enterprise”, then “Yes”.] The page shows the call live, then “reading the answer”.
+[Send the Mavis Analytics email.] The email arrived through the Gmail push, and the sender and fields have passed their checks.
 
-[**AE calls** tab, play the recording.] The tier is confirmed by all three signals.
+[Answer the call: “Enterprise”, then “Yes”.] The page shows the call while it is happening, and then it shows that the answer is being read.
 
-[Rocketlane.] It’s the Enterprise template: 30 days, dedicated CSM.
+[**AE calls** tab, play the recording.] Here is the recording, and the tier was confirmed by all three signals.
 
-[Slack.] A personalised channel and welcome, with no price and nothing internal.
+[Rocketlane.] The project was created from the Enterprise template, which runs for 30 days with a dedicated CSM.
 
-[Tick the Kickoff tasks in Rocketlane.] About 15 seconds later the update appears in Slack, and the progress tab updates on its own.
+[Slack.] The channel and the welcome message are personalised, and they contain no price and nothing internal.
 
-[**Migration check** tab: connect Mavis’s database.] All five checks fail against NovaCRM: missing rows, a duplicate, blank emails, a dropped column.
+[Tick the Kickoff tasks in Rocketlane.] About 15 seconds later, the update appears in Slack, and the progress tab updates by itself.
 
-[**Fix destination data**, then **Run check**.] Now all five pass.
+[**Migration check** tab: connect Mavis’s database.] All five checks fail, because rows are missing, one record is duplicated, emails are blank, and a column was dropped.
 
-[Rocketlane, Automations.] And the native overdue automation.
+[**Fix destination data**, then **Run check**.] After the data is fixed, all five checks pass.
+
+[Rocketlane, Automations.] This is the native overdue automation in Rocketlane.
 
 **Negative runs.**
 
-[Send the Pied Piper email.] The contact email is missing. The agent asked the AE for it, and nothing was created.
+[Send the Pied Piper email.] The contact email is missing, so the agent asked the AE for it, and nothing was created.
 
-[Re-send the Mavis email.] Duplicate deal. It goes to a human with no call.
+[Re-send the Mavis email.] This is a duplicate deal, so it went straight to a human, and no call was made.
 
-[Send the Hooli email; on the calls say “wrong number”.] An unclear answer is never accepted. After three calls the run goes to Needs a human with every recording. A person sets the tier, and that action is audited.
+[Send the Hooli email, and say “wrong number” on the calls.] An unclear answer is never accepted. After three calls, the run went to a human with every recording attached. When a person sets the tier, that action is audited.
 
-[Acme Retail.] Here, “Migration verified” was ticked without a passing check, so the agent reopened it.
+[Acme Retail.] Here, someone ticked “Migration verified” without a passing check, so the agent reopened the task.
 
-[Terminal: `make test-part4`.] The Part 4 tests (happy path, validation, both templates, Rocketlane down, existing project, no answer, ambiguous answer) all pass.
+[Terminal: `make test-part4`.] These are the Part 4 tests, and they all pass. They cover the happy path, validation, both templates, Rocketlane being down, an existing project, an AE who does not answer, and an ambiguous answer.
 
-[AI usage, Tool calls.] Every model call and tool call is logged with tokens, cost and its inputs and outputs.
+[AI usage, then Tool calls.] Every model call and every tool call is logged with its tokens, cost, inputs and outputs.
 
 ## 10. Assumptions and design (1 min)
 
-Assumptions, with reasons:
-- **one deal per email**;
-- **the tier comes from the phone call**, never from the price;
-- **CS owns the templates**, which live in configuration, not prompts;
-- **overdue escalation is native Rocketlane**;
-- **customer data is read-only**.
+I made a few assumptions, and each one has a reason. Each email announces one deal, because that is how Sales works today. The tier comes from the phone call and never from the price, because prices in emails are unreliable. CS owns the templates, so they live in configuration and not in prompts. Overdue escalation stays in Rocketlane, so it works even if my service is down. Finally, customer data is only ever read and never written.
 
-The design enforces:
-- **exactly-once** side effects;
-- **crash-safe** checkpoints;
-- **least privilege** per agent;
-- **humans in charge** of anything unclear;
-- **evals** gating every prompt change.
+The design enforces five rules. Every side effect happens exactly once. A crash never loses or repeats work. Each agent can use only its own tools. A human decides anything that is unclear. And no prompt change ships without passing the evaluations. Every decision, guardrail and issue is documented in the repository.
 
-Every decision, guardrail and issue I found is documented in the repo.
+Slack is real in this demo and is not mocked. The only gap in production is Slack Connect, which needs a paid plan, so that invite is flagged as a manual step.
 
-Slack is real, not mocked. The only production gap is Slack Connect, which needs a paid plan, so that invite is flagged as a manual step.
-
-To sum up: everything the brief asked for, plus migration verification, live tracking, call recordings, observability, evals and chaos testing. Thank you.
+To sum up, the system delivers everything the brief asked for. On top of that, it adds migration verification, live tracking, call recordings, observability, evaluations and chaos testing. Thank you for watching.
