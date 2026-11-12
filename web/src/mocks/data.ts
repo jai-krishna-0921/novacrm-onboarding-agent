@@ -543,16 +543,18 @@ export function createDb() {
   const batch = (run_id: string, id: string, min: number, fails: boolean) => {
     const rows: [string, number, number, unknown[]][] = fails
       ? [
-          ["record_count", 120, 118, []],
-          ["primary_keys", 0, 4, [1007, 1032, 1088, 1101]],
-          ["duplicates", 0, 2, [1045, 1062]],
-          ["required_fields", 0, 3, [1012, 1077, 1093]],
+          ["record_count", 60, 57, []],
+          ["primary_keys", 0, 4, [12, 31, 47, 58]],
+          ["duplicates", 0, 1, [23]],
+          ["required_fields", 0, 3, [17, 36, 44]],
+          ["schema", 0, 1, ["phone"]],
         ]
       : [
-          ["record_count", 120, 120, []],
+          ["record_count", 60, 60, []],
           ["primary_keys", 0, 0, []],
           ["duplicates", 0, 0, []],
           ["required_fields", 0, 0, []],
+          ["schema", 0, 0, []],
         ];
     for (const [name, expected, actual, ids] of rows)
       checks.push({
@@ -572,7 +574,7 @@ export function createDb() {
     "migration",
     "migration_check",
     "escalated",
-    "escalated to CSM: primary_keys (expected 0, actual 4); duplicates (expected 0, actual 2); required_fields (expected 0, actual 3)",
+    "escalated to CSM: primary_keys (expected 0, actual 4); duplicates (expected 0, actual 1); required_fields (expected 0, actual 3); schema (expected 0, actual 1)",
   );
   escalations.push({
     key: "r-5a6f19:migration:c03a7d91e2b4",
@@ -581,7 +583,7 @@ export function createDb() {
     agent: "migration",
     status: "open",
     reason:
-      "Migration check batch c03a7d91e2b4 needs the CSM: 4 source rows missing in the destination, 2 duplicate ids, 3 rows without a name or email.",
+      "Migration check batch c03a7d91e2b4 needs the CSM: 4 source rows missing in the destination, 1 duplicate id, 3 rows without a name or email, missing column phone.",
     created_at: iso(45),
   });
   batch("r-7f3a91", "a77f0b13c9d2", 300, false);
@@ -654,49 +656,65 @@ export function createDb() {
     },
   ];
 
-  // Contacts: 120 source rows; destination has 4 missing, 2 duplicated ids, 3 blank fields.
+  // Contacts, mirroring backend/app/db/seed.py demo_contacts(): 60 source rows (some phone/title blank); the
+  // 57-row destination has no phone column, an extra lifecycle_stage column, ids 12/31/47/58 never copied, id 23
+  // duplicated, blank email on 17 and 44, blank name on 36.
   const FIRST = [
     "Ava",
-    "Noah",
-    "Mia",
-    "Liam",
-    "Zara",
-    "Omar",
-    "Ines",
-    "Kai",
+    "Ben",
+    "Chloe",
+    "Dev",
+    "Elena",
+    "Farah",
+    "Gil",
+    "Hana",
+    "Ivan",
+    "Jia",
+    "Kofi",
     "Lena",
-    "Ravi",
-    "Sofia",
-    "Jonas",
   ];
-  const LAST = [
-    "Mendes",
-    "Kowalski",
-    "Ito",
-    "Brennan",
-    "Adeyemi",
-    "Lindqvist",
-    "Haddad",
-    "Novak",
-    "Castillo",
-    "Sato",
-  ];
-  const source: J[] = Array.from({ length: 120 }, (_, i) => {
-    const f = FIRST[i % FIRST.length];
-    const l = LAST[(i * 7) % LAST.length];
-    return { id: 1000 + i, name: `${f} ${l}`, email: `${f}.${l}${i}@example.org`.toLowerCase() };
+  const LAST = ["Shah", "Okafor", "Novak", "Reyes", "Tanaka"];
+  const COMPANIES = ["Globex", "Globex Retail", "Globex Logistics", "Globex Health"];
+  const TITLES = ["VP Sales", "Account Manager", "Ops Lead", "CFO", "Analyst", "", "Director, IT"];
+  const STAGES = ["customer", "customer", "lead", "opportunity"];
+  const sourceColumns = ["id", "name", "email", "phone", "company", "title", "created_on"];
+  const destColumns = ["id", "name", "email", "company", "title", "created_on", "lifecycle_stage"];
+  const source: J[] = Array.from({ length: 60 }, (_, k) => {
+    const i = k + 1;
+    const first = FIRST[(i - 1) % 12];
+    const last = LAST[Math.floor((i - 1) / 12)];
+    return {
+      id: i,
+      name: `${first} ${last}`,
+      email: `${first}.${last}@globex.example`.toLowerCase(),
+      phone: i % 9 === 0 ? null : `+1 415 555 ${String(1000 + i).padStart(4, "0")}`,
+      company: COMPANIES[i % 4],
+      title: TITLES[i % 7] || null,
+      created_on: new Date(Date.UTC(2024, 0, 1 + 11 * i)).toISOString().slice(0, 10),
+    };
   });
   const brokenDest = () => {
-    const missing = new Set([1007, 1032, 1088, 1101]);
-    const dest = source.filter((r) => !missing.has(r.id as number)).map((r) => ({ ...r }));
-    for (const id of [1012, 1077]) dest.find((r) => r.id === id)!.name = "";
-    dest.find((r) => r.id === 1093)!.email = "";
-    for (const id of [1045, 1062]) dest.push({ ...dest.find((r) => r.id === id)! });
-    return dest;
+    const dropped = new Set([12, 31, 47, 58]);
+    const dest: J[] = [];
+    for (const r of source) {
+      const id = r.id as number;
+      if (dropped.has(id)) continue;
+      const d: J = {};
+      for (const c of destColumns.slice(0, -1)) d[c] = r[c];
+      d.lifecycle_stage = STAGES[id % 4];
+      if (id === 17 || id === 44) d.email = null;
+      if (id === 36) d.name = "";
+      dest.push(d);
+      if (id === 23) dest.push({ ...d });
+    }
+    return { rows: dest, columns: [...destColumns] };
   };
+  const broken = brokenDest();
   const migration = {
     source,
-    dest: brokenDest(),
+    sourceColumns,
+    dest: broken.rows,
+    destColumns: broken.columns,
     lastCheck: { run_id: "r-5a6f19", batch_id: "c03a7d91e2b4", ts: iso(45), passed: false } as J | null,
   };
 

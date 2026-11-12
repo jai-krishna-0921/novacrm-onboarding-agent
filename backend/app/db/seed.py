@@ -1,27 +1,59 @@
 """`make seed`: AE directory (from DEMO_AE_* settings), LangGraph checkpoint tables, and the migration-validation
 demo databases (mig_source / mig_dest). Idempotent; also runs on every container start."""
 
-from sqlalchemy import create_engine, text
+from datetime import date, timedelta
+
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
 from app.config import Settings
 from app.db.store import PgStore
+from app.services.migration_check import Table
+from app.services.migration_demo import insert_rows
 from app.services.store import Store
 
 DEMO_DATABASES = {"mig_source", "mig_dest"}
-FIRST = ["Ava", "Ben", "Chloe", "Dev", "Elena", "Farah", "Gil", "Hana", "Ivan", "Jia"]
+FIRST = ["Ava", "Ben", "Chloe", "Dev", "Elena", "Farah", "Gil", "Hana", "Ivan", "Jia", "Kofi", "Lena"]
 LAST = ["Shah", "Okafor", "Novak", "Reyes", "Tanaka"]
-BROKEN_EMAIL_ID, DUPLICATE_ID = 17, 23
+COMPANIES = ["Globex", "Globex Retail", "Globex Logistics", "Globex Health"]
+TITLES = ["VP Sales", "Account Manager", "Ops Lead", "CFO", "Analyst", "", "Director, IT"]
+STAGES = ["customer", "customer", "lead", "opportunity"]
+
+# The old CRM export (source) vs what landed in NovaCRM (destination). Planted defects, all real SQL data:
+DROPPED_IDS = (12, 31, 47, 58)          # never copied: row count short, primary keys missing
+DUPLICATE_ID = 23                       # copied twice (destination has no primary key)
+BLANK_EMAIL_IDS, BLANK_NAME_ID = (17, 44), 36   # required fields lost in transit
+SOURCE_COLUMNS = ["id", "name", "email", "phone", "company", "title", "created_on"]
+DEST_COLUMNS = ["id", "name", "email", "company", "title", "created_on", "lifecycle_stage"]  # phone dropped
+SOURCE_DDL = ("id integer PRIMARY KEY, name text, email text, phone text, company text, title text, "
+              "created_on date")
+DEST_DDL = "id integer, name text, email text, company text, title text, created_on date, lifecycle_stage text"
 
 
-def demo_contacts() -> tuple[list[dict], list[dict]]:
-    """50 source contacts; the destination copy has one row with a missing email and one duplicated row."""
-    source = [{"id": i, "name": f"{FIRST[(i - 1) % 10]} {LAST[(i - 1) // 10]}",
-               "email": f"{FIRST[(i - 1) % 10].lower()}.{LAST[(i - 1) // 10].lower()}@globex.example"}
-              for i in range(1, 51)]
-    dest = [{**r, "email": None} if r["id"] == BROKEN_EMAIL_ID else dict(r) for r in source]
-    dest.append(dict(source[DUPLICATE_ID - 1]))
-    return source, dest
+def demo_contacts() -> tuple[Table, Table]:
+    """60 source contacts (7 columns, some optional values blank) and the 57-row destination copy: no phone
+    column, an extra lifecycle_stage column, 4 rows never copied, 1 duplicated, 2 blank emails, 1 blank name."""
+    source: list[dict] = []
+    for i in range(1, 61):
+        first, last = FIRST[(i - 1) % 12], LAST[(i - 1) // 12]
+        source.append({"id": i, "name": f"{first} {last}", "email": f"{first.lower()}.{last.lower()}@globex.example",
+                       "phone": None if i % 9 == 0 else f"+1 415 555 {1000 + i:04d}",
+                       "company": COMPANIES[i % 4], "title": TITLES[i % 7] or None,
+                       "created_on": date(2024, 1, 1) + timedelta(days=11 * i)})
+    dest = []
+    for r in source:
+        i = r["id"]
+        if i in DROPPED_IDS:
+            continue
+        d = {c: r.get(c) for c in DEST_COLUMNS[:-1]} | {"lifecycle_stage": STAGES[i % 4]}
+        if i in BLANK_EMAIL_IDS:
+            d["email"] = None
+        if i == BLANK_NAME_ID:
+            d["name"] = ""
+        dest.append(d)
+        if i == DUPLICATE_ID:
+            dest.append(dict(d))
+    return Table(source, SOURCE_COLUMNS), Table(dest, DEST_COLUMNS)
 
 
 def _ensure_database(url: str) -> None:
@@ -35,18 +67,29 @@ def _ensure_database(url: str) -> None:
         admin.dispose()
 
 
-def _seed_table(url: str, rows: list[dict], primary_key: bool) -> int:
-    """Create contacts if missing and fill it only when empty, so a hand-fixed destination survives restarts."""
+def _columns(url: str) -> list[str]:
     _ensure_database(url)
     eng = create_engine(url)
     try:
+        with eng.connect() as c:
+            insp = inspect(c)
+            return [col["name"] for col in insp.get_columns("contacts")] if insp.has_table("contacts") else []
+    finally:
+        eng.dispose()
+
+
+def _seed_table(url: str, ddl: str, rows: Table, rebuild: bool) -> int:
+    """Create contacts if missing and fill it only when empty, so a hand-fixed destination survives restarts.
+    rebuild: drop it first (the demo layout changed since it was seeded)."""
+    eng = create_engine(url)
+    try:
         with eng.begin() as c:
-            # The destination has no PK on purpose: duplicates are what the checker must catch.
-            c.exec_driver_sql("CREATE TABLE IF NOT EXISTS contacts (id integer"
-                              f"{' PRIMARY KEY' if primary_key else ''}, name text, email text)")
+            if rebuild:
+                c.exec_driver_sql("DROP TABLE IF EXISTS contacts")
+            c.exec_driver_sql(f"CREATE TABLE IF NOT EXISTS contacts ({ddl})")
             if c.execute(text("SELECT count(*) FROM contacts")).scalar():
                 return 0
-            c.execute(text("INSERT INTO contacts (id, name, email) VALUES (:id, :name, :email)"), rows)
+            insert_rows(c, rows)
             return len(rows)
     finally:
         eng.dispose()
@@ -54,7 +97,11 @@ def _seed_table(url: str, rows: list[dict], primary_key: bool) -> int:
 
 def seed_migration_demo(source_url: str, dest_url: str) -> tuple[int, int]:
     source, dest = demo_contacts()
-    return _seed_table(source_url, source, True), _seed_table(dest_url, dest, False)
+    have = _columns(source_url)
+    _columns(dest_url)  # creates the database
+    rebuild = bool(have) and have != SOURCE_COLUMNS  # an older demo layout: rebuild both sides
+    # The destination has no PK on purpose: duplicates are what the checker must catch.
+    return _seed_table(source_url, SOURCE_DDL, source, rebuild), _seed_table(dest_url, DEST_DDL, dest, rebuild)
 
 
 def seed_ae(store: Store, s: Settings) -> str:

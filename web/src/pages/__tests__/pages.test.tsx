@@ -91,17 +91,44 @@ describe("pages against the mock API", () => {
 
   it("migration page highlights problem rows", async () => {
     renderApp("/migration");
-    await waitFor(
-      () =>
-        expect(document.querySelectorAll('tr[data-tone="bad"], tr[data-tone="warn"]').length).toBeGreaterThan(
-          0,
-        ),
-      {
-        timeout: 3000,
-      },
-    );
+    await screen.findByText("Missing columns");
+    await waitFor(() => expect(document.querySelectorAll('tr[data-tone="ok"]').length).toBeGreaterThan(0));
     await userEvent.click(screen.getByRole("switch", { name: "Only rows with problems" }));
-    await waitFor(() => expect(document.querySelectorAll('tr[data-tone="ok"]').length).toBe(0));
+    // source side: the four rows never copied, all flagged as the severe kind
+    await waitFor(() => expect(document.querySelectorAll('tr[data-tone="bad"]').length).toBe(4));
+    expect(document.querySelectorAll('tr[data-tone="ok"]').length).toBe(0);
+  });
+
+  it("migration page compares columns and shows each side's own columns", async () => {
+    renderApp("/migration");
+    // the column card flags phone as missing in the destination and lifecycle_stage as an extra
+    await waitFor(() => expect(document.querySelector('[data-kind="missing"]')?.textContent).toBe("phone"));
+    expect(document.querySelector('[data-kind="absent"]')?.textContent).toBe("phone");
+    expect(document.querySelector('[data-kind="extra"]')?.textContent).toBe("lifecycle_stage");
+    expect(screen.getByText("Missing columns")).toBeInTheDocument();
+
+    const headers = () => screen.getAllByRole("columnheader").map((h) => h.textContent);
+    await waitFor(() => expect(headers()).toContain("Phone"));
+    expect(headers()).not.toContain("Lifecycle stage");
+
+    await userEvent.click(screen.getByRole("tab", { name: /Destination/ }));
+    await waitFor(() => expect(headers()).toContain("Lifecycle stage"));
+    expect(headers()).not.toContain("Phone");
+    // blank required fields show as (blank), not as an empty cell
+    await userEvent.click(screen.getByRole("switch", { name: "Only rows with problems" }));
+    await waitFor(() => expect(screen.getAllByText("(blank)").length).toBeGreaterThan(0));
+    expect(screen.getAllByText("Duplicate id").length).toBeGreaterThan(0);
+  });
+
+  it("migration demo fix adds the missing column, reset puts the defects back", async () => {
+    renderApp("/migration");
+    await waitFor(() => expect(document.querySelector('[data-kind="missing"]')).not.toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Fix destination data" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Fix destination data", hidden: false }));
+    await waitFor(() => expect(document.querySelector('[data-kind="missing"]')).toBeNull());
+    expect(
+      screen.getByText("All 7 source columns are in the destination. 1 extra, which is allowed."),
+    ).toBeInTheDocument();
   });
 
   it("agents page shows the three agents", async () => {

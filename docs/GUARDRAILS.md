@@ -40,7 +40,7 @@ deployed system with real Gmail / Retell / Rocketlane / Slack. Evals = real-Clau
 ### Data migration (Priya's "marked done but not verified")
 | # | Guardrail | Where | Proof |
 |---|---|---|---|
-| G16 | Four code checks (count, missing PKs, duplicates, required fields); evidence written to the "Migration verified" task; **the agent never completes the task**. | `services/migration_check.py` | `test_all_pass_writes_evidence_note_and_leaves_task_open`, `test_failure_escalates_to_csm_writes_evidence_and_leaves_task_open`, `test_append_note_keeps_existing_note_and_never_sends_status`; live: evidence note written, task stayed "To do" |
+| G16 | Five code checks (count, missing PKs, duplicates, required fields, missing columns) on real SQL tables whose schemas differ; evidence written to the "Migration verified" task; **the agent never completes the task**. | `services/migration_check.py` | `test_all_pass_writes_evidence_note_and_leaves_task_open`, `test_failure_escalates_to_csm_writes_evidence_and_leaves_task_open`, `test_append_note_keeps_existing_note_and_never_sends_status`, `test_column_missing_in_destination_fails_and_extra_columns_pass`, `test_seeded_demo_data_catches_every_planted_defect`; live: evidence note written, task stayed "To do" |
 | G17 | "Migration verified" ticked without a passing check (or CSM acceptance) → **reopened** and escalated; handoff blocked until migration is resolved. | `services/tracking.py` | `tests/test_tracking.py`, `tests/test_tracking_review.py` |
 
 ### Platform

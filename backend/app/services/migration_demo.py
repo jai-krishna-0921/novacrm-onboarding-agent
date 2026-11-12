@@ -1,11 +1,11 @@
 """Migration demo controls: repair the demo destination (so a re-check passes on camera) or restore its planted
 defects. Only ever writes to the configured demo destination (see `refusal`); never touches the source."""
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
 from app.config import Settings
-from app.services.migration_check import REQUIRED, Contacts, blank
+from app.services.migration_check import REQUIRED, Contacts, Table, blank, columns_of, compare_columns
 
 DEMO_DEST_DATABASE = "mig_dest"
 
@@ -19,29 +19,50 @@ def refusal(s: Settings) -> str | None:
     return None
 
 
-def repair(source: Contacts, dest: Contacts) -> Contacts:
-    """Destination with duplicate ids dropped (first row kept), blank required fields filled from the source row,
-    and source rows missing from the destination added. Non-blank destination values are kept. Sorted by id."""
+def repair(source: Contacts, dest: Contacts) -> Table:
+    """Destination with the source columns it lacks added (values copied from the source row), duplicate ids
+    dropped (first row kept), blank required fields filled from the source, and source rows missing from the
+    destination added. Non-blank destination values and extra destination columns are kept. Sorted by id."""
     by_id = {r["id"]: r for r in source}
+    cols = compare_columns(source, dest)
+    columns = cols["dest"] + cols["missing"]
     out: dict = {}
     for r in dest:
         if r["id"] in out:
             continue
         src = by_id.get(r["id"], {})
-        out[r["id"]] = {**r, **{f: src[f] for f in REQUIRED if blank(r.get(f)) and not blank(src.get(f))}}
+        fill = {f: src[f] for f in REQUIRED if blank(r.get(f)) and not blank(src.get(f))}
+        out[r["id"]] = {**r, **{c: src.get(c) for c in cols["missing"]}, **fill}
     for i, r in by_id.items():
-        out.setdefault(i, dict(r))
-    return sorted(out.values(), key=lambda r: (r["id"] is None, r["id"] if isinstance(r["id"], int) else 0,
-                                               str(r["id"])))
+        out.setdefault(i, {c: r.get(c) for c in columns})
+    return Table(sorted(out.values(), key=lambda r: (r["id"] is None, r["id"] if isinstance(r["id"], int) else 0,
+                                                     str(r["id"]))), columns)
+
+
+def insert_rows(conn, rows: Contacts) -> None:
+    if rows:
+        cols = columns_of(rows)
+        q = conn.dialect.identifier_preparer.quote
+        conn.execute(text(f"INSERT INTO contacts ({', '.join(q(c) for c in cols)}) "
+                          f"VALUES ({', '.join(':' + c for c in cols)})"), [{c: r.get(c) for c in cols} for r in rows])
 
 
 def replace_contacts(url: str, rows: Contacts) -> None:
-    """Replace the whole `contacts` table in one transaction (a failure leaves it as it was)."""
+    """Replace the whole `contacts` table in one transaction (a failure leaves it as it was). The table's columns
+    are made to match the rows': missing ones are added as text, extra ones dropped (demo database only)."""
     eng = create_engine(url)
     try:
         with eng.begin() as c:
+            q = c.dialect.identifier_preparer.quote
+            have = [col["name"] for col in inspect(c).get_columns("contacts")]
+            want = columns_of(rows) or have
+            for col in want:
+                if col not in have:
+                    c.exec_driver_sql(f"ALTER TABLE contacts ADD COLUMN {q(col)} text")
+            for col in have:
+                if col not in want:
+                    c.exec_driver_sql(f"ALTER TABLE contacts DROP COLUMN {q(col)}")
             c.execute(text("DELETE FROM contacts"))
-            if rows:
-                c.execute(text("INSERT INTO contacts (id, name, email) VALUES (:id, :name, :email)"), rows)
+            insert_rows(c, rows)
     finally:
         eng.dispose()

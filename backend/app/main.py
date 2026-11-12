@@ -32,6 +32,8 @@ from app.services.audit import audit, redact
 from app.services.health import HEALTH_INTERVAL, INTEGRATIONS, HealthMonitor, fake_monitor, iso
 from app.services.migration_check import (
     MigrationDataUnavailable,
+    columns_of,
+    compare_columns,
     find_problems,
     row_problems,
     run_migration_check,
@@ -96,9 +98,10 @@ class AePatch(BaseModel):
 MIGRATION_DEMO_RUN = "migration_demo"  # synthetic run id for the demo fix/reset audit rows
 
 
-def _canonical(rows: list[dict]) -> list[tuple]:
-    """Row multiset in a fixed order, to tell whether a demo write would change anything."""
-    return sorted((str(r["id"]), r.get("name") or "", r.get("email") or "") for r in rows)
+def _canonical(rows: list[dict]) -> tuple:
+    """Columns + row multiset in a fixed order, to tell whether a demo write would change anything."""
+    cols = columns_of(rows)
+    return cols, sorted(tuple(str(r.get(c) or "") for c in cols) for r in rows)
 
 
 class Resolution(BaseModel):
@@ -590,7 +593,7 @@ def create_app(c: Container | None = None) -> FastAPI:
 
     def summary(source: list[dict], dest: list[dict]) -> dict:
         return {"source_count": len(source), "dest_count": len(dest), "problems": find_problems(source, dest),
-                "last_check": container().store.latest_migration_check()}
+                "columns": compare_columns(source, dest), "last_check": container().store.latest_migration_check()}
 
     @app.get("/migration/summary")
     def migration_summary():
@@ -601,8 +604,7 @@ def create_app(c: Container | None = None) -> FastAPI:
                        offset: int = OFFSET, only_problems: bool = False):
         source, dest = contacts()
         problems = find_problems(source, dest)
-        rows = [{"id": r["id"], "name": r.get("name"), "email": r.get("email"),
-                 "problems": row_problems(r, side, problems)} for r in (source if side == "source" else dest)]
+        rows = [{**r, "problems": row_problems(r, side, problems)} for r in (source if side == "source" else dest)]
         if only_problems:
             rows = [r for r in rows if r["problems"]]
         return {"total": len(rows), "rows": rows[offset:offset + limit]}
@@ -641,12 +643,13 @@ def create_app(c: Container | None = None) -> FastAPI:
 
     @app.post("/migration/demo/fix")
     def migration_demo_fix(request: Request):
-        """Repair the demo destination: drop the duplicate row, fill blanks from the source, add missing rows."""
+        """Repair the demo destination: add missing columns, drop duplicate rows, fill blanks from the source, add
+        missing rows."""
         return demo_write("fix", request, repair)
 
     @app.post("/migration/demo/reset")
     def migration_demo_reset(request: Request):
-        """Restore the planted defects (duplicate id 23, missing email on id 17)."""
+        """Restore the planted defects (see app/db/seed.py demo_contacts)."""
         return demo_write("reset", request, lambda source, dest: demo_contacts()[1])
 
     @app.get("/ui/config", include_in_schema=False)

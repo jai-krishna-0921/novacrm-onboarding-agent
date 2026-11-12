@@ -14,7 +14,7 @@ from app.db.seed import demo_contacts
 from app.graph.root import validate_resolution
 from app.main import create_app
 from app.providers.real.rocketlane import RocketlaneClient
-from app.services.migration_check import evaluate, load_contacts, run_migration_check
+from app.services.migration_check import Table, compare_columns, evaluate, load_contacts, run_migration_check
 from app.tools.registry import PermanentToolError, ToolNotAllowed
 
 BASE = "https://api.rocketlane.com/api/1.0"
@@ -30,22 +30,47 @@ def by_name(results):
 
 # ---------------- the four checks (pure) ----------------
 
-def test_clean_copy_passes_all_four_checks():
+def test_clean_copy_passes_all_five_checks():
     results = evaluate(rows(10), rows(10))
-    assert [r.name for r in results] == ["record_count", "primary_keys", "duplicates", "required_fields"]
+    assert [r.name for r in results] == ["record_count", "primary_keys", "duplicates", "required_fields", "schema"]
     assert all(r.passed for r in results)
     assert by_name(results)["record_count"].details == {"expected": 10, "actual": 10, "sample_ids": []}
 
 
-def test_seeded_demo_data_catches_both_planted_defects():
+def test_seeded_demo_data_catches_every_planted_defect():
     source, dest = demo_contacts()
-    assert len(source) == 50
+    assert (len(source), len(dest)) == (60, 57)
     r = by_name(evaluate(source, dest))
     assert not r["duplicates"].passed and r["duplicates"].details["sample_ids"] == [23]
-    assert not r["required_fields"].passed and r["required_fields"].details["sample_ids"] == [17]
-    # The duplicate row also inflates the destination count; no source row is missing.
-    assert not r["record_count"].passed and r["record_count"].details["actual"] == 51
-    assert r["primary_keys"].passed
+    assert not r["required_fields"].passed and r["required_fields"].details["sample_ids"] == [17, 36, 44]
+    assert not r["primary_keys"].passed and r["primary_keys"].details["sample_ids"] == [12, 31, 47, 58]
+    assert not r["record_count"].passed and r["record_count"].details == {"expected": 60, "actual": 57,
+                                                                           "sample_ids": []}
+    assert not r["schema"].passed and r["schema"].details["sample_ids"] == ["phone"]
+
+
+def test_blank_optional_source_values_are_not_defects():
+    """The old CRM has blank phones and titles; only name and email are required."""
+    source, _ = demo_contacts()
+    assert any(x["phone"] is None for x in source) and any(x["title"] is None for x in source)
+    assert all(r.passed for r in evaluate(source, source))
+
+
+def test_column_missing_in_destination_fails_and_extra_columns_pass():
+    src = [{**x, "phone": "1"} for x in rows(3)]
+    dropped = [{k: v for k, v in x.items() if k != "phone"} for x in src]
+    assert not by_name(evaluate(src, dropped))["schema"].passed
+    extra = [{**x, "stage": "lead"} for x in src]
+    assert by_name(evaluate(src, extra))["schema"].passed
+    cols = compare_columns(src, extra)
+    assert (cols["missing"], cols["extra"]) == ([], ["stage"])
+
+
+def test_empty_destination_table_still_reports_its_columns():
+    """Columns come from the table, not the first row: an empty destination is a count failure, not a schema one."""
+    r = by_name(evaluate(rows(2), Table([], ["id", "name", "email"])))
+    assert r["schema"].passed and not r["record_count"].passed
+    assert not by_name(evaluate(rows(2), Table([], ["id", "name"])))["schema"].passed
 
 
 def test_missing_source_row_is_caught_even_when_counts_match():
@@ -78,6 +103,14 @@ def test_load_contacts_reads_a_real_sql_table(tmp_path):
         c.execute(text("CREATE TABLE contacts (id INTEGER, name TEXT, email TEXT)"))
         c.execute(text("INSERT INTO contacts VALUES (2, 'B', 'b@x'), (1, 'A', NULL)"))
     assert load_contacts(url) == [{"id": 1, "name": "A", "email": None}, {"id": 2, "name": "B", "email": "b@x"}]
+
+
+def test_load_contacts_reads_every_column_even_from_an_empty_table(tmp_path):
+    url = f"sqlite:///{tmp_path / 'c.db'}"
+    with create_engine(url).begin() as c:
+        c.execute(text("CREATE TABLE contacts (id INTEGER, name TEXT, email TEXT, region TEXT)"))
+    t = load_contacts(url)
+    assert t == [] and t.columns == ["id", "name", "email", "region"]
 
 
 # ---------------- end to end through the registry (fake Rocketlane) ----------------
@@ -113,7 +146,8 @@ def test_all_pass_writes_evidence_note_and_leaves_task_open(completed):
     assert h.world.rocketlane.task_updates and all(set(u) == {"taskPrivateNote"}
                                                    for u in h.world.rocketlane.task_updates)
     stored = h.store.list_migration_checks(rid)
-    assert [r["check_name"] for r in stored] == ["record_count", "primary_keys", "duplicates", "required_fields"]
+    assert [r["check_name"] for r in stored] == ["record_count", "primary_keys", "duplicates", "required_fields",
+                                                 "schema"]
     assert all(r["passed"] for r in stored) and len({r["batch_id"] for r in stored}) == 1
     assert migration_escalations(h, rid) == []
 
@@ -129,7 +163,7 @@ def test_failure_escalates_to_csm_writes_evidence_and_leaves_task_open(completed
     assert "FAILED" in task["taskPrivateNote"] and "17" in task["taskPrivateNote"]
     assert task["status"] == {"value": 1, "label": "To do"}
     assert h.status(rid) == "COMPLETED"  # onboarding run itself is not re-opened
-    assert [r["passed"] for r in h.store.list_migration_checks(rid)] == [False, True, False, False]
+    assert [r["passed"] for r in h.store.list_migration_checks(rid)] == [False, False, False, False, False]
 
 
 def test_repeat_failures_keep_one_open_escalation_and_a_pass_resolves_it(completed):
@@ -193,7 +227,7 @@ def test_endpoint_runs_checks_and_shows_them_on_run_detail(completed):
     client = api(h, demo_contacts)
     r = client.post(f"/runs/{rid}/migration-check")
     assert r.status_code == 200 and r.json()["passed"] is False
-    assert len(client.get(f"/runs/{rid}").json()["migration_checks"]) == 4
+    assert len(client.get(f"/runs/{rid}").json()["migration_checks"]) == 5
 
 
 def test_endpoint_reports_unreachable_migration_databases(completed):
@@ -319,9 +353,37 @@ def test_seed_creates_databases_and_is_idempotent(socket_enabled):
     seed_migration_demo(src, dst)
     seed_migration_demo(src, dst)  # second run: no new databases, no extra rows
     source, dest = load_contacts(src), load_contacts(dst)
-    assert (len(source), len(dest)) == (50, 51)
+    assert (len(source), len(dest)) == (60, 57)
+    assert (source.columns, dest.columns) == (demo_contacts()[0].columns, demo_contacts()[1].columns)
     r = by_name(evaluate(source, dest))
-    assert r["duplicates"].details["sample_ids"] == [23] and r["required_fields"].details["sample_ids"] == [17]
+    assert r["duplicates"].details["sample_ids"] == [23] and r["required_fields"].details["sample_ids"] == [17, 36, 44]
+    assert r["schema"].details["sample_ids"] == ["phone"]
+    assert source == demo_contacts()[0]  # real SQL round trip: dates, NULLs and blanks survive
+
+
+def test_seed_rebuilds_an_older_demo_layout(socket_enabled):
+    """Deployed databases seeded with the old 3-column demo are rebuilt once; after that a restart keeps edits."""
+    from conftest import worker_db
+
+    from app.db.seed import seed_migration_demo
+    base = "postgresql+psycopg://postgres:postgres@localhost:5432"
+    src, dst = f"{base}/{worker_db('mig_old_src')}", f"{base}/{worker_db('mig_old_dst')}"
+    try:
+        admin = create_engine(f"{base}/postgres", isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            for db in (worker_db("mig_old_src"), worker_db("mig_old_dst")):
+                c.exec_driver_sql(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+                c.exec_driver_sql(f"CREATE DATABASE {db}")
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"Postgres not reachable: {e}")
+    for url in (src, dst):
+        with create_engine(url).begin() as c:
+            c.exec_driver_sql("CREATE TABLE contacts (id integer, name text, email text)")
+            c.exec_driver_sql("INSERT INTO contacts VALUES (1, 'Old', 'old@x')")
+    assert seed_migration_demo(src, dst) == (60, 57)
+    with create_engine(dst).begin() as c:
+        c.exec_driver_sql("DELETE FROM contacts WHERE id = 1")  # a hand edit
+    assert seed_migration_demo(src, dst) == (0, 0) and len(load_contacts(dst)) == 56
 
 
 def test_identical_recheck_within_the_window_returns_the_first_batch(completed):

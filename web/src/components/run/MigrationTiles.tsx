@@ -1,19 +1,19 @@
 import { CheckCircle2, XCircle } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { fmtDateTime, fmtTime, human, str } from "@/lib/format";
-import { CHECKS } from "@/lib/migration";
+import { CHECKS, sampleNoun } from "@/lib/migration";
 import type { MigrationCheckRow } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Table, Td, Th, Tr } from "@/components/ui/table";
 import { Tip } from "@/components/ui/tooltip";
 
-export function checkDetail(c: Pick<MigrationCheckRow, "details">): string {
+export function checkDetail(c: Pick<MigrationCheckRow, "check_name" | "details">): string {
   const d = c.details ?? {};
   const parts: string[] = [];
   if (d.expected !== undefined || d.actual !== undefined)
     parts.push(`Expected ${str(d.expected)}, found ${str(d.actual)}`);
   if (Array.isArray(d.sample_ids) && d.sample_ids.length)
-    parts.push(`ids ${d.sample_ids.slice(0, 5).map(str).join(", ")}`);
+    parts.push(`${sampleNoun(c.check_name)} ${d.sample_ids.slice(0, 5).map(str).join(", ")}`);
   return parts.join(". ");
 }
 
@@ -28,7 +28,7 @@ export function splitBatches(checks: MigrationCheckRow[]) {
 
 export function CheckTiles({ checks }: { checks: MigrationCheckRow[] }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {checks.map((c) => {
         const meta = CHECKS[c.check_name];
         const detail = checkDetail(c);

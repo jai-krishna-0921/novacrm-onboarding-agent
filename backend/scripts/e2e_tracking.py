@@ -20,8 +20,6 @@ import time
 import uuid
 from datetime import date
 
-from sqlalchemy import create_engine, text
-
 from app.config import Settings, Tier, role_placeholders, tier_rules
 from app.container import RealProviders
 from app.db.seed import demo_contacts
@@ -31,6 +29,7 @@ from app.providers.fake import FakeWorld
 from app.providers.real.rocketlane import RocketlaneClient
 from app.providers.real.slack import SlackClient
 from app.services.migration_check import load_contacts, run_migration_check
+from app.services.migration_demo import repair, replace_contacts
 from app.services.tracking import Tracker
 from app.tools.definitions import RlCreateIn, build_registry, rocketlane_project_payload
 from app.tools.registry import AmbiguousToolError
@@ -128,11 +127,8 @@ def main() -> int:
         check("migration escalation open for the CSM", bool(esc))
 
         print("5. data fixed -> check passes -> verified sticks", flush=True)
-        src, _ = demo_contacts()
-        eng = create_engine(s.mig_dest_url)
-        with eng.begin() as c:
-            c.execute(text("DELETE FROM contacts"))
-            c.execute(text("INSERT INTO contacts (id, name, email) VALUES (:id, :name, :email)"), src)
+        src, dest = demo_contacts()
+        replace_contacts(s.mig_dest_url, repair(src, dest))  # the CSM's fix: missing column, rows and blanks
         res = run_migration_check(store, registry, contacts, run_id)
         check("migration check passes after the fix", res["passed"] is True)
         tick(mv)
@@ -167,10 +163,7 @@ def main() -> int:
             for ch in (customer_ch, handoff_ch):
                 if ch:
                     slack.c.conversations_archive(channel=ch)
-            src, dest = demo_contacts()
-            with create_engine(s.mig_dest_url).begin() as c:
-                c.execute(text("DELETE FROM contacts"))
-                c.execute(text("INSERT INTO contacts (id, name, email) VALUES (:id, :name, :email)"), dest)
+            replace_contacts(s.mig_dest_url, demo_contacts()[1])
             print("   project deleted, channels archived, demo data restored", flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"   cleanup problem: {e}", flush=True)

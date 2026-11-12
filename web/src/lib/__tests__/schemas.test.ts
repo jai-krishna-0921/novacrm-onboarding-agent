@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDb } from "@/mocks/data";
-import { Aes, AgentsStatus, MigrationSummary, RunDetail, Runs } from "../schemas";
+import { Aes, AgentsStatus, MigrationData, MigrationSummary, RunDetail, Runs } from "../schemas";
 
 describe("zod schemas", () => {
   it("parses a run detail and fills defaults for missing blocks", () => {
@@ -51,6 +51,37 @@ describe("zod schemas", () => {
       last_check: null,
     });
     expect(s.problems).toEqual({ duplicates: [], missing_required: [], missing_in_dest: [7] });
+    // payloads from before the column check still parse
+    expect(s.columns).toEqual({ source: [], dest: [], missing: [], extra: [] });
+  });
+
+  it("parses migration columns and keeps every table column on a data row", () => {
+    const s = MigrationSummary.parse({
+      source_count: 1,
+      dest_count: 1,
+      problems: {},
+      columns: {
+        source: ["id", "phone"],
+        dest: ["id", "lifecycle_stage"],
+        missing: ["phone"],
+        extra: ["lifecycle_stage"],
+      },
+    });
+    expect(s.columns.missing).toEqual(["phone"]);
+    const d = MigrationData.parse({
+      total: 1,
+      rows: [
+        {
+          id: 1,
+          name: "Ava",
+          email: null,
+          phone: null,
+          created_on: "2024-01-12",
+          problems: ["missing_email"],
+        },
+      ],
+    });
+    expect(d.rows[0]).toMatchObject({ phone: null, created_on: "2024-01-12", problems: ["missing_email"] });
   });
 
   it("maps an unknown agent status to idle instead of failing the page", () => {

@@ -2,7 +2,7 @@ import type { MigrationDataRow, MigrationSummary } from "./schemas";
 
 // Labels and tones for migration problems, matching backend/app/services/migration_check.py: row codes are
 // duplicate, missing_<field> (name, email) and missing_in_dest; summary keys are duplicates, missing_required and
-// missing_in_dest.
+// missing_in_dest, plus columns.missing for the schema check.
 
 export const PROBLEM: Record<string, { label: string; explain: string }> = {
   duplicate: { label: "Duplicate id", explain: "The same id appears more than once in the destination." },
@@ -34,7 +34,9 @@ export function rowTone(row: Pick<MigrationDataRow, "problems">): RowTone {
 
 export function problemCount(s: MigrationSummary): number {
   const p = s.problems;
-  return p.duplicates.length + p.missing_required.length + p.missing_in_dest.length;
+  return (
+    p.duplicates.length + p.missing_required.length + p.missing_in_dest.length + s.columns.missing.length
+  );
 }
 
 export const CHECKS: Record<string, { label: string; explain: string }> = {
@@ -42,4 +44,11 @@ export const CHECKS: Record<string, { label: string; explain: string }> = {
   primary_keys: { label: "Primary keys", explain: "Every source id exists in the destination." },
   duplicates: { label: "Duplicates", explain: "No id appears twice in the destination." },
   required_fields: { label: "Required fields", explain: "Every destination row has a name and an email." },
+  schema: {
+    label: "Columns",
+    explain: "Every source column exists in the destination. Extra destination columns are fine.",
+  },
 };
+
+/** The schema check's sample_ids are column names; every other check lists row ids. */
+export const sampleNoun = (checkName: string) => (checkName === "schema" ? "missing columns" : "ids");

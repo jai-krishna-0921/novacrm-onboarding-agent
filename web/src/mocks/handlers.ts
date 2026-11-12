@@ -117,16 +117,50 @@ function migrationProblems(db: Db) {
     missing_in_dest: source.filter((r) => !destIds.has(r.id)).map((r) => r.id),
   };
 }
+/** Same shape as compare_columns() in services/migration_check.py. */
+function migrationColumns(db: Db) {
+  const { sourceColumns: s, destColumns: d } = db.migration;
+  return {
+    source: s,
+    dest: d,
+    missing: s.filter((c) => !d.includes(c)),
+    extra: d.filter((c) => !s.includes(c)),
+  };
+}
 function summary(db: Db) {
   return {
     source_count: db.migration.source.length,
     dest_count: db.migration.dest.length,
     problems: migrationProblems(db),
+    columns: migrationColumns(db),
     last_check: db.migration.lastCheck,
   };
 }
+/** Mirrors repair() in services/migration_demo.py: add missing columns (values from the source), drop duplicate
+ * ids, fill blank name/email from the source, add missing source rows; extra destination columns are kept. */
+function repairDest(db: Db) {
+  const { source } = db.migration;
+  const cols = migrationColumns(db);
+  const byId = new Map(source.map((r) => [r.id, r]));
+  const out = new Map<unknown, Record<string, unknown>>();
+  for (const r of db.migration.dest) {
+    if (out.has(r.id)) continue;
+    const src = byId.get(r.id) ?? {};
+    const row: Record<string, unknown> = { ...r };
+    for (const c of cols.missing) row[c] = src[c] ?? null;
+    for (const f of ["name", "email"])
+      if (!String(row[f] ?? "").trim() && String(src[f] ?? "").trim()) row[f] = src[f];
+    out.set(r.id, row);
+  }
+  const columns = [...cols.dest, ...cols.missing];
+  for (const [id, r] of byId)
+    if (!out.has(id)) out.set(id, Object.fromEntries(columns.map((c) => [c, r[c] ?? null])));
+  db.migration.dest = [...out.values()].sort((a, b) => Number(a.id) - Number(b.id));
+  db.migration.destColumns = columns;
+}
 function runCheck(db: Db, runId: string) {
   const p = migrationProblems(db);
+  const cols = migrationColumns(db);
   const { source, dest } = db.migration;
   const batch = Math.random().toString(16).slice(2, 14);
   const ts = nowIso();
@@ -154,6 +188,12 @@ function runCheck(db: Db, runId: string) {
         actual: p.missing_required.length,
         sample_ids: p.missing_required.slice(0, 10),
       },
+    },
+    {
+      // sample_ids holds column names for this check
+      name: "schema",
+      passed: !cols.missing.length,
+      details: { expected: 0, actual: cols.missing.length, sample_ids: cols.missing.slice(0, 10) },
     },
   ];
   for (const r of results)
@@ -187,7 +227,7 @@ function runCheck(db: Db, runId: string) {
     agent: "migration",
     step: "migration_check",
     status: passed ? "ok" : "escalated",
-    rationale: passed ? "all four checks passed" : "escalated to CSM",
+    rationale: passed ? "all five checks passed" : "escalated to CSM",
     input: null,
     output: { batch_id: batch, passed },
   });
@@ -470,12 +510,14 @@ export function makeHandlers(db: Db = createDb(), opts: { latency?: number } = {
     }),
     http.post("/migration/demo/fix", async () => {
       await wait();
-      db.migration.dest = db.migration.source.map((r) => ({ ...r }));
+      repairDest(db);
       return json(summary(db));
     }),
     http.post("/migration/demo/reset", async () => {
       await wait();
-      db.migration.dest = db.brokenDest();
+      const broken = db.brokenDest();
+      db.migration.dest = broken.rows;
+      db.migration.destColumns = broken.columns;
       return json(summary(db));
     }),
 

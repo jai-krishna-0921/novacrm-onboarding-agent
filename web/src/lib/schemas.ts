@@ -242,6 +242,16 @@ export const MigrationSummary = z.object({
     missing_required: z.array(z.union([z.string(), z.number()])).default([]),
     missing_in_dest: z.array(z.union([z.string(), z.number()])).default([]),
   }),
+  // Table columns per side; `missing` (source columns the destination lacks) fails the schema check, `extra`
+  // destination columns are allowed. Defaults keep payloads from before the column check parsing.
+  columns: z
+    .object({
+      source: z.array(z.string()).default([]),
+      dest: z.array(z.string()).default([]),
+      missing: z.array(z.string()).default([]),
+      extra: z.array(z.string()).default([]),
+    })
+    .default({ source: [], dest: [], missing: [], extra: [] }),
   last_check: z
     .object({
       run_id: str,
@@ -254,12 +264,15 @@ export const MigrationSummary = z.object({
 });
 export type MigrationSummary = z.infer<typeof MigrationSummary>;
 
-export const MigrationDataRow = z.object({
-  id: z.union([z.string(), z.number()]).nullish(),
-  name: str,
-  email: str,
-  problems: z.array(z.string()).default([]),
-});
+// Every column of that side's table comes through (values may be null); only these are typed.
+export const MigrationDataRow = z
+  .object({
+    id: z.union([z.string(), z.number()]).nullish(),
+    name: str,
+    email: str,
+    problems: z.array(z.string()).default([]),
+  })
+  .loose();
 export type MigrationDataRow = z.infer<typeof MigrationDataRow>;
 export const MigrationData = z.object({ total: z.number(), rows: z.array(MigrationDataRow) });
 

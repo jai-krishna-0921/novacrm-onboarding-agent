@@ -1,5 +1,6 @@
-"""Migration validation (plan §12): compare source and destination `contacts`, store the evidence, put it on the
-project's "Migration verified" task, and escalate to the CSM when anything is off. Code decides; no LLM.
+"""Migration validation (plan §12): compare source and destination `contacts` (rows and columns), store the
+evidence, put it on the project's "Migration verified" task, and escalate to the CSM when anything is off.
+Code decides; no LLM.
 
 The task is never closed here. A person closes it after reading the evidence.
 """
@@ -23,7 +24,26 @@ AGENT = "migration"
 TASK_PREFIX = "Migration verified"  # Enterprise: "Migration verified (validation checks passed)"; Growth: same prefix
 SAMPLE = 10
 
-Contacts = list[dict]  # rows with id, name, email
+Contacts = list[dict]  # rows keyed by column name; `id` is the key, `name` and `email` are required
+
+
+class Table(list):
+    """Rows (dicts) plus the table's column names, in table order. An empty table still has its columns."""
+
+    def __init__(self, rows=(), columns=None):
+        super().__init__(rows)
+        self.columns = list(columns) if columns is not None else (list(self[0]) if self else [])
+
+
+def columns_of(rows: Contacts) -> list[str]:
+    cols = getattr(rows, "columns", None)
+    return list(cols) if cols is not None else (list(rows[0]) if rows else [])
+
+
+def compare_columns(source: Contacts, dest: Contacts) -> dict[str, list[str]]:
+    """Source columns the destination lacks fail the check (data was dropped); extra destination columns are fine."""
+    s, d = columns_of(source), columns_of(dest)
+    return {"source": s, "dest": d, "missing": [c for c in s if c not in d], "extra": [c for c in d if c not in s]}
 
 
 class MigrationDataUnavailable(Exception):
@@ -41,7 +61,8 @@ def load_contacts(url: str) -> Contacts:
     eng = create_engine(url)
     try:
         with eng.connect() as c:
-            return [dict(r._mapping) for r in c.execute(text("SELECT id, name, email FROM contacts ORDER BY id"))]
+            res = c.execute(text("SELECT * FROM contacts ORDER BY id"))
+            return Table([dict(r._mapping) for r in res], list(res.keys()))
     except SQLAlchemyError as e:
         raise MigrationDataUnavailable(f"{type(e).__name__}: {str(e).splitlines()[0]}") from e
     finally:
@@ -54,8 +75,9 @@ def _result(name: str, expected: int, actual: int, ids: list, ok: bool = True) -
 
 
 def _ids(ids) -> list:
-    """The destination has no PK, so ids can be NULL or mixed types; sort without crashing (NULLs last)."""
-    return sorted(ids, key=lambda i: (i is None, str(i)))
+    """The destination has no PK, so ids can be NULL or mixed types; sort without crashing (numbers in numeric
+    order, then other values as text, NULLs last)."""
+    return sorted(ids, key=lambda i: (i is None, not isinstance(i, int), i if isinstance(i, int) else 0, str(i)))
 
 
 REQUIRED = ("name", "email")
@@ -85,19 +107,23 @@ def row_problems(row: dict, side: str, problems: dict[str, list]) -> list[str]:
 def evaluate(source: Contacts, dest: Contacts) -> list[CheckResult]:
     p = find_problems(source, dest)
     missing, dupes, blank_ids = p["missing_in_dest"], p["duplicates"], p["missing_required"]
+    cols = compare_columns(source, dest)["missing"]
     return [
         # An empty source means the migration never ran or the URL is wrong: never "verified".
         _result("record_count", len(source), len(dest), [], ok=len(source) > 0),
         _result("primary_keys", 0, len(missing), missing),
         _result("duplicates", 0, len(dupes), dupes),
         _result("required_fields", 0, len(blank_ids), blank_ids),
+        # sample_ids holds column names here: every source column must exist in the destination.
+        _result("schema", 0, len(cols), cols),
     ]
 
 
 def _note(results: list[CheckResult], batch_id: str, ts: str) -> str:
     verdict = "PASSED" if all(r.passed for r in results) else "FAILED"
     def line(r: CheckResult) -> str:
-        ids = f", ids {html.escape(str(r.details['sample_ids']))}" if r.details["sample_ids"] else ""
+        what = "missing columns" if r.name == "schema" else "ids"
+        ids = f", {what} {html.escape(str(r.details['sample_ids']))}" if r.details["sample_ids"] else ""
         return (f"<li>{r.name}: {'pass' if r.passed else 'FAIL'} "
                 f"(expected {r.details['expected']}, actual {r.details['actual']}{ids})</li>")
 
@@ -149,7 +175,8 @@ def run_migration_check(store: Store, registry: ToolRegistry, contacts: Callable
         task_note = f"not written: {e}"
 
     problems = [f"{r.name} (expected {r.details['expected']}, actual {r.details['actual']}, "
-                f"ids {r.details['sample_ids']})" for r in results if not r.passed]
+                f"{'missing columns' if r.name == 'schema' else 'ids'} {r.details['sample_ids']})"
+                for r in results if not r.passed]
     if task_note != "written":
         problems.append(f"evidence {task_note}")
     open_esc = [x for x in store.list_escalations("open") if x["run_id"] == run_id and x.get("kind") == AGENT]
@@ -169,7 +196,7 @@ def run_migration_check(store: Store, registry: ToolRegistry, contacts: Callable
     audit(store, run_id, AGENT, "migration_check",
           output={"batch_id": batch_id, "passed": passed, "results": [r.__dict__ for r in results],
                   "task_note": task_note, "escalation": escalation},
-          rationale=("all four checks passed; evidence attached, task left open for a person to close" if not problems
+          rationale=("all five checks passed; evidence attached, task left open for a person to close" if not problems
                      else "escalated to CSM: " + "; ".join(problems)),
           status="ok" if not problems else "escalated")
     out = {"batch_id": batch_id, "passed": passed, "results": [r.__dict__ for r in results],

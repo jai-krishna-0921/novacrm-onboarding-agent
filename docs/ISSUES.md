@@ -135,3 +135,5 @@ post per phase, one handoff note, dashboard aggregates equal a brute-force recou
 | 76 | Failed `#cs-handoffs` post never retried; channel id not recorded on escalated runs | Low | Fixed: failed #cs-handoffs post retried on the next sync; channel id saved at creation. |
 | 77 | Default test suite ~22 s (budget 10 s) | Low | Fixed: pytest-xdist (-n 4) and shared per-worker Postgres; ~8 s. |
 
+| 78 | Migration check read only `id, name, email`: a column dropped in transit (schema drift) went unnoticed, and demo tables had identical layouts | Medium | Fixed: tables read with all columns; fifth check `schema` fails on source columns missing in the destination; demo tables now differ in rows and columns. |
+| 79 | Problem ids sorted as text (`5` after `47`) | Low | Fixed: numeric ids sort numerically. |

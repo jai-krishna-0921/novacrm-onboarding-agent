@@ -36,8 +36,8 @@ Use a **new customer name** for every take (channel names and duplicate detectio
 6. **Slack**: the channel name, topic and welcome are tier-personalised; no price from the email leaked.
 7. **Tracking (Agent 3)**: tick the Kickoff tasks done in Rocketlane → within a minute a progress update with a
    progress bar appears in the Slack channel.
-8. **Migration**: tick the import task → the migration check runs (3 of 4 checks fail on the demo data: count,
-   duplicate id 23, missing email on id 17), the evidence lands on "Migration verified", an item appears in
+8. **Migration**: tick the import task → the migration check runs (all 5 checks fail on the demo data: 57 of 60
+   rows, ids 12/31/47/58 never copied, id 23 duplicated, blank email/name on 17/36/44, column `phone` dropped), the evidence lands on "Migration verified", an item appears in
    *Needs a human*. Tick "Migration verified" anyway → the agent reopens it. Dismiss the escalation with a reason in the
    dashboard (or explain that fixing the data and re-running closes it).
 9. **Handoff**: tick the remaining tasks → handoff summary (Sonnet, fact-checked) on the "Handoff to support" task and in

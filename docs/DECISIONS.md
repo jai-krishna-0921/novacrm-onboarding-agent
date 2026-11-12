@@ -95,7 +95,7 @@ alternative. Newest decisions are appended in their section. Requirements: `docs
 
 | Decision | Why |
 |---|---|
-| Four code checks between source and destination (`mig_source.contacts` vs `mig_dest.contacts`): record count, missing PKs, duplicates, blank required fields. Demo data plants a duplicate and a missing email. | Priya's "marked done but not verified". |
+| Five code checks between two real Postgres tables (`mig_source.contacts` vs `mig_dest.contacts`): record count, missing PKs, duplicates, blank required fields, and columns (every source column must exist in the destination; extra destination columns are fine). The demo tables differ like a real CRM migration: source 60 rows × 7 columns (old CRM, with blank optional phones/titles), destination 57 rows × 7 different columns (`phone` dropped, `lifecycle_stage` added), 4 rows never copied, 1 duplicated, 2 blank emails, 1 blank name. | Priya's "marked done but not verified". |
 | Evidence goes into the "Migration verified" task's **private note** (no comment API); the agent **never completes the task** — a person does. Failure → `migration` escalation to the CSM; dismissable with a recorded reason. | Human stays accountable; evidence is where the PM works. Verified live: status/dates untouched. |
 
 ## 10. Deployment and operations
