@@ -146,3 +146,19 @@ def test_flags_are_never_resolved_from_the_dashboard():
     """They clear only when fixed in Rocketlane: no action can close one by hand, and none touches the graph."""
     with pytest.raises(ValueError):
         validate_resolution({"action": "retry"}, {"escalation_kind": "tracking"})
+
+
+def test_handoff_waits_for_an_open_flag_and_goes_ahead_once_it_is_fixed(growth):
+    h, rid = growth
+    t = tracker(h)
+    from app.services.tracking import PHASES
+    for p in PHASES[:-1]:
+        mark(h, phase=p)
+    t.sync(rid)
+    set_phase(h, "Go-Live", "Blocked")
+    mark(h, phase="Go-Live")
+    t.sync(rid)
+    assert h.status(rid) != "HANDED_OFF" and flags(h, rid)
+    set_phase(h, "Go-Live", "Completed")
+    t.sync(rid)
+    assert h.status(rid) == "HANDED_OFF" and flags(h, rid) == []

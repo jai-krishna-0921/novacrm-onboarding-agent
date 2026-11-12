@@ -141,7 +141,17 @@ class Tracker:
     # ---------- which runs ----------
     def due_runs(self) -> list[str]:
         # Every live, not-handed-off project, however old (never "the newest N runs").
-        return [run["id"] for run in self.store.list_trackable_runs(SKIP_STATUSES)]
+        ids = [run["id"] for run in self.store.list_trackable_runs(SKIP_STATUSES)]
+        # Rule-e flags on a run that is no longer tracked (cancelled, ...) can't clear themselves: close them here.
+        live = set(ids)
+        for e in self.store.list_escalations("open"):
+            if e.get("kind") == "tracking" and e["run_id"] not in live:
+                self.store.upsert_escalation(e["key"], dict(status="resolved", resolved_by="tracking",
+                                                          resolution={"action": "closed", "by": "tracking",
+                                                                      "note": "run is no longer tracked"}))
+                audit(self.store, e["run_id"], AGENT, "flag_cleared",
+                      rationale=f"run is no longer tracked; closed: {e['reason']}")
+        return ids
 
     # ---------- one sync ----------
     def sync(self, run_id: str) -> dict:
@@ -352,6 +362,9 @@ class Tracker:
         """Best effort, internal channel only (never the customer's); the escalation is the record."""
         channel = self.settings.slack_handoff_channel
         if not channel or channel == run.get("slack_channel_id") or self.store.find_run_by_channel(channel):
+            audit(self.store, run["id"], AGENT, "flag_slack", status="skipped" if not channel else "blocked",
+                  rationale="no internal channel configured (SLACK_HANDOFF_CHANNEL); flag is in Needs a human"
+                  if not channel else "SLACK_HANDOFF_CHANNEL is a customer channel; flag not posted to Slack")
             return
         try:
             self.registry.call(AGENT, "slack_post_internal", {"channel_id": channel, "text": text}, run_id=run["id"],
@@ -380,6 +393,15 @@ class Tracker:
         # (Phases completed in this same sync were already announced by rule a above.)
         if not all(t["completed"] for t in tasks if t.get("phase") in PHASES):
             return None
+        # A handoff stops tracking, so an open rule-e flag (something Blocked, a phase status out of step) could
+        # never clear afterwards. Hold the handoff until it is fixed in Rocketlane.
+        flags = [e["reason"] for e in self.store.list_escalations("open")
+                 if e["run_id"] == run["id"] and e.get("kind") == "tracking"]
+        if flags:
+            if changed:
+                audit(self.store, run["id"], AGENT, "handoff", status="blocked",
+                      rationale=f"Go-Live complete but {len(flags)} item(s) need a look first: {flags[0]}")
+            return "handoff blocked: project needs a look" if changed else None
         return self._handoff(run, tasks)
 
     def _handoff(self, run: dict, tasks: list[dict]) -> str:

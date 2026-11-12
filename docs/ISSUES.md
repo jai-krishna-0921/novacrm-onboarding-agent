@@ -146,3 +146,8 @@ post per phase, one handoff note, dashboard aggregates equal a brute-force recou
 | 86 | A phase marked Completed in the Rocketlane UI (tasks left open) or a Blocked task/phase went unnoticed by Agent 3 | Medium | Fixed: rule e reads phase statuses; flags to Needs a human + internal Slack, clears itself when fixed in Rocketlane; customer never told. |
 | 87 | Comments and the At risk flag are invisible to Agent 3 | Low | Known API limit: no comment endpoint; `atRisk` is write-only (verified live). Blocked status is the readable signal. |
 | 88 | Validation rationale showed a Python list (`['customer_email: missing']`) in the Activity log | Low | Fixed: issues joined as text. |
+| 89 | A rule-e flag open at handoff (Blocked Go-Live phase, Blocked task outside the template phases) stayed open forever: handed-off runs are never synced again | High | Fixed: handoff waits while a flag is open and goes ahead once it is fixed in Rocketlane. |
+| 90 | Flags on a run that stops being tracked (cancelled) could never clear | Medium | Fixed: the scheduler closes them with "run is no longer tracked". |
+| 91 | Salesforce links rewritten by Outlook SafeLinks / Google redirects were rejected (needless clarification email) | Medium | Fixed: one level of gateway wrapping is unwrapped before validation. |
+| 92 | `/lightning/r/<id>/view` (no `Opportunity` segment) rejected | Low | Fixed: segment optional; the `006` id prefix is still required. |
+| 93 | Internal flag post skipped silently when no internal channel is configured | Low | Fixed: audited. |
