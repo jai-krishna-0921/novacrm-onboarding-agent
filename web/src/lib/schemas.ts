@@ -238,9 +238,9 @@ export const MigrationSummary = z.object({
   source_count: z.number(),
   dest_count: z.number(),
   problems: z.object({
-    duplicates: z.array(z.union([z.string(), z.number()])).default([]),
-    missing_required: z.array(z.union([z.string(), z.number()])).default([]),
-    missing_in_dest: z.array(z.union([z.string(), z.number()])).default([]),
+    duplicates: z.array(z.union([z.string(), z.number(), z.null()])).default([]),
+    missing_required: z.array(z.union([z.string(), z.number(), z.null()])).default([]),
+    missing_in_dest: z.array(z.union([z.string(), z.number(), z.null()])).default([]),
     not_in_source: z.array(z.union([z.string(), z.number(), z.null()])).default([]),
   }),
   // Table columns per side; `missing` (source columns the destination lacks) fails the schema check, `extra`

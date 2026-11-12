@@ -53,7 +53,9 @@ def display_name(name: str | None) -> str:
     name = " ".join((name or "").split())
     if not name or name != name.lower() or not any(c.isalpha() for c in name):
         return name
-    return " ".join(w[:1].upper() + w[1:] for w in name.split(" "))
+    def cap(w: str) -> str:  # first letter only, and never one that changes length ("ß".upper() == "SS")
+        return w[:1].upper() + w[1:] if len(w[:1].upper()) == 1 else w
+    return " ".join("-".join(cap(part) for part in w.split("-")) for w in name.split(" "))
 
 
 def find_opportunity_url(text: str) -> str | None:

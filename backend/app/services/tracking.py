@@ -207,9 +207,15 @@ class Tracker:
             audit(self.store, run["id"], AGENT, "phase_complete", status="degraded",
                   rationale=f"{phase} complete; no Slack channel on this run, nothing posted")
             return f"{phase} complete (no Slack channel)"
+        key = f"{run['id']}:progress:{phase}"
+        # The text is fixed at the first attempt: a retry after a lost response must look for (and, only if it
+        # is really missing, post) the same message, not one with newer task counts.
+        text = self.store.get_kv(f"text:{key}")
+        if text is None:
+            text = progress_update(phase, tasks)
+            self.store.set_kv(f"text:{key}", text)
         try:
-            post_customer_update(self.store, self.registry, run, progress_update(phase, tasks),
-                                 key=f"{run['id']}:progress:{phase}", requested_by="tracking",
+            post_customer_update(self.store, self.registry, run, text, key=key, requested_by="tracking",
                                  reason=f"all {phase} tasks completed (once per phase)")
         except ToolFailed as e:
             audit(self.store, run["id"], AGENT, "phase_complete", status="failed",

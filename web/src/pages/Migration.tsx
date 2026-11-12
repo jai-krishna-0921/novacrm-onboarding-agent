@@ -106,9 +106,13 @@ export function MigrationPage() {
             summary={sum}
             footer={
               sum.last_check?.ts
-                ? `Last recorded check: ${lastRun?.customer_name || "a run"}, ${fmtDateTime(sum.last_check.ts)}, ${
-                    sum.last_check.passed ? "passed" : "failed"
-                  }.${sum.last_check.passed && issues ? " The data has changed since then." : ""}`
+                ? `Last recorded check: ${lastRun?.customer_name || "a run"}, ${fmtDateTime(sum.last_check.ts)}${
+                    sum.last_check.passed == null ? "" : sum.last_check.passed ? ", passed" : ", failed"
+                  }.${
+                    sum.last_check.passed != null && sum.last_check.passed !== (issues === 0)
+                      ? " The data has changed since then."
+                      : ""
+                  }`
                 : "No check has been recorded on a run yet. It runs by itself when the import task is ticked in Rocketlane."
             }
           />
